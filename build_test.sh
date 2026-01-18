@@ -78,8 +78,10 @@ if [[ "$BUILD_TYPE" == "Release" ]]; then
 	BUILD_DIR_LINUX="build-release"
 fi
 
-if cmake -B "$BUILD_DIR_LINUX" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" > /dev/null 2>&1; then
-	if cmake --build "$BUILD_DIR_LINUX" -j"$JOBS" --target simple_window > /dev/null 2>&1; then
+LINUX_CMAKE_CMD="cmake -B $BUILD_DIR_LINUX -DCMAKE_BUILD_TYPE=$BUILD_TYPE"
+LINUX_BUILD_CMD="cmake --build $BUILD_DIR_LINUX -j$JOBS"
+if $LINUX_CMAKE_CMD > /dev/null 2>&1; then
+	if $LINUX_BUILD_CMD > /dev/null 2>&1; then
 		RESULTS[linux]="OK"
 		BINARIES[linux]="$SCRIPT_DIR/$BUILD_DIR_LINUX/examples/simple_window/simple_window"
 		if [[ -f "${BINARIES[linux]}" ]]; then
@@ -89,10 +91,12 @@ if cmake -B "$BUILD_DIR_LINUX" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" > /dev/null 2>&1
 	else
 		RESULTS[linux]="BUILD FAILED"
 		echo -e "  ${RED}Build failed${NC}"
+		echo -e "  ${RED}Command: $LINUX_BUILD_CMD${NC}"
 	fi
 else
 	RESULTS[linux]="CMAKE FAILED"
 	echo -e "  ${RED}CMake configuration failed${NC}"
+	echo -e "  ${RED}Command: $LINUX_CMAKE_CMD${NC}"
 fi
 
 # ============================================================================
@@ -107,12 +111,10 @@ fi
 
 # Check if MinGW is available
 if command -v x86_64-w64-mingw32-gcc &> /dev/null; then
-	if cmake -B "$BUILD_DIR_WIN" \
-		-DCMAKE_SYSTEM_NAME=Windows \
-		-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
-		-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
-		-DCMAKE_BUILD_TYPE="$BUILD_TYPE" > /dev/null 2>&1; then
-		if cmake --build "$BUILD_DIR_WIN" -j"$JOBS" --target simple_window > /dev/null 2>&1; then
+	WIN_CMAKE_CMD="cmake -B $BUILD_DIR_WIN -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ -DCMAKE_BUILD_TYPE=$BUILD_TYPE"
+	WIN_BUILD_CMD="cmake --build $BUILD_DIR_WIN -j$JOBS"
+	if $WIN_CMAKE_CMD > /dev/null 2>&1; then
+		if $WIN_BUILD_CMD > /dev/null 2>&1; then
 			RESULTS[windows]="OK"
 			BINARIES[windows]="$SCRIPT_DIR/$BUILD_DIR_WIN/examples/simple_window/simple_window.exe"
 			if [[ -f "${BINARIES[windows]}" ]]; then
@@ -122,10 +124,12 @@ if command -v x86_64-w64-mingw32-gcc &> /dev/null; then
 		else
 			RESULTS[windows]="BUILD FAILED"
 			echo -e "  ${RED}Build failed${NC}"
+			echo -e "  ${RED}Command: $WIN_BUILD_CMD${NC}"
 		fi
 	else
 		RESULTS[windows]="CMAKE FAILED"
 		echo -e "  ${RED}CMake configuration failed${NC}"
+		echo -e "  ${RED}Command: $WIN_CMAKE_CMD${NC}"
 	fi
 else
 	RESULTS[windows]="SKIPPED (MinGW not found)"
@@ -152,12 +156,10 @@ if [[ -z "$ANDROID_NDK" ]]; then
 fi
 
 if [[ -n "$ANDROID_NDK" ]] && [[ -f "$ANDROID_NDK/build/cmake/android.toolchain.cmake" ]]; then
-	if cmake -B "$BUILD_DIR_ANDROID" \
-		-DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
-		-DANDROID_ABI=arm64-v8a \
-		-DANDROID_PLATFORM=android-32 \
-		-DCMAKE_BUILD_TYPE="$BUILD_TYPE" > /dev/null 2>&1; then
-		if cmake --build "$BUILD_DIR_ANDROID" -j"$JOBS" --target simple_window > /dev/null 2>&1; then
+	ANDROID_CMAKE_CMD="cmake -B $BUILD_DIR_ANDROID -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-32 -DCMAKE_BUILD_TYPE=$BUILD_TYPE"
+	ANDROID_BUILD_CMD="cmake --build $BUILD_DIR_ANDROID -j$JOBS"
+	if $ANDROID_CMAKE_CMD > /dev/null 2>&1; then
+		if $ANDROID_BUILD_CMD > /dev/null 2>&1; then
 			RESULTS[android]="OK"
 			BINARIES[android]="$SCRIPT_DIR/$BUILD_DIR_ANDROID/examples/simple_window/libsimple_window.so"
 			if [[ -f "${BINARIES[android]}" ]]; then
@@ -167,10 +169,12 @@ if [[ -n "$ANDROID_NDK" ]] && [[ -f "$ANDROID_NDK/build/cmake/android.toolchain.
 		else
 			RESULTS[android]="BUILD FAILED"
 			echo -e "  ${RED}Build failed${NC}"
+			echo -e "  ${RED}Command: $ANDROID_BUILD_CMD${NC}"
 		fi
 	else
 		RESULTS[android]="CMAKE FAILED"
 		echo -e "  ${RED}CMake configuration failed${NC}"
+		echo -e "  ${RED}Command: $ANDROID_CMAKE_CMD${NC}"
 	fi
 else
 	RESULTS[android]="SKIPPED (NDK not found)"
