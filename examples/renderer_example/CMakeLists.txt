@@ -26,6 +26,7 @@ add_skapp(renderer_example
 	PACKAGE_NAME net.stereokit.renderer_example
 	APP_NAME "Renderer Example"
 )
+skr_copy_moltenvk         (renderer_example)
 target_skapp_assets       (renderer_example ${CMAKE_CURRENT_SOURCE_DIR}/assets)
 target_sources            (renderer_example PRIVATE renderer_example.c)
 target_link_libraries     (renderer_example PRIVATE sk_renderer)

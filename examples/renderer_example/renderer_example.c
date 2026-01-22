@@ -100,7 +100,7 @@ static skr_tex_t create_checkerboard_texture(int32_t resolution, int32_t square_
 
 	skr_tex_t tex = {0};
 	skr_tex_sampler_t sampler = {skr_tex_sample_linear, skr_tex_address_clamp};
-	skr_tex_create(skr_tex_fmt_rgba32_srgb, 0, sampler, (skr_vec3i_t){resolution, resolution, 1}, 1, 1, pixels, &tex); // No mips - checkerboard averages poorly
+	skr_tex_create(skr_tex_fmt_rgba32_srgb, 0, sampler, (skr_vec3i_t){resolution, resolution, 1}, 1, 1, &(skr_tex_data_t){.data = pixels, .mip_count = 1, .layer_count = 1}, &tex); // No mips - checkerboard averages poorly
 
 	free(pixels);
 	return tex;

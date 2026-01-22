@@ -48,6 +48,7 @@ target_link_libraries     (imgui_example PRIVATE sk_renderer)
 target_include_directories(imgui_example PRIVATE
 	${sk_renderer_SOURCE_DIR}/example/imgui_backend
 )
+skr_copy_moltenvk(imgui_example)
 
 ###############################################################################
 # cimgui dependency

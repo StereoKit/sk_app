@@ -118,13 +118,12 @@ elseif(APPLE)
 	target_sources(sk_app PRIVATE src/ska_macos.m)
 
 	# macOS framework dependencies
-	find_library(COCOA_LIBRARY Cocoa REQUIRED)
-	find_library(IOKIT_LIBRARY IOKit REQUIRED)
-	find_library(COREVIDEO_LIBRARY CoreVideo REQUIRED)
-	target_link_libraries(sk_app PRIVATE
-		${COCOA_LIBRARY}
-		${IOKIT_LIBRARY}
-		${COREVIDEO_LIBRARY}
+	target_link_libraries(sk_app PUBLIC
+		"-framework Cocoa"
+		"-framework IOKit"
+		"-framework CoreVideo"
+		"-framework QuartzCore"
+		"-framework UniformTypeIdentifiers"
 	)
 
 elseif(UNIX)
