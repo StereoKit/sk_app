@@ -9,110 +9,113 @@
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>  /* For key codes */
 
+/* Forward declaration for file dialog check */
+static void ska_macos_check_file_dialog(void);
+
 /* Scancode translation table (Carbon key codes to ska_scancode_) */
 static ska_scancode_ ska_macos_scancode_table[256];
 
 static void ska_init_scancode_table(void) {
 	/* Initialize all to unknown */
 	for (int i = 0; i < 256; i++) {
-		ska_macos_scancode_table[i] = SKA_SCANCODE_UNKNOWN;
+		ska_macos_scancode_table[i] = ska_scancode_unknown;
 	}
 
 	/* Letters */
-	ska_macos_scancode_table[kVK_ANSI_A] = SKA_SCANCODE_A;
-	ska_macos_scancode_table[kVK_ANSI_B] = SKA_SCANCODE_B;
-	ska_macos_scancode_table[kVK_ANSI_C] = SKA_SCANCODE_C;
-	ska_macos_scancode_table[kVK_ANSI_D] = SKA_SCANCODE_D;
-	ska_macos_scancode_table[kVK_ANSI_E] = SKA_SCANCODE_E;
-	ska_macos_scancode_table[kVK_ANSI_F] = SKA_SCANCODE_F;
-	ska_macos_scancode_table[kVK_ANSI_G] = SKA_SCANCODE_G;
-	ska_macos_scancode_table[kVK_ANSI_H] = SKA_SCANCODE_H;
-	ska_macos_scancode_table[kVK_ANSI_I] = SKA_SCANCODE_I;
-	ska_macos_scancode_table[kVK_ANSI_J] = SKA_SCANCODE_J;
-	ska_macos_scancode_table[kVK_ANSI_K] = SKA_SCANCODE_K;
-	ska_macos_scancode_table[kVK_ANSI_L] = SKA_SCANCODE_L;
-	ska_macos_scancode_table[kVK_ANSI_M] = SKA_SCANCODE_M;
-	ska_macos_scancode_table[kVK_ANSI_N] = SKA_SCANCODE_N;
-	ska_macos_scancode_table[kVK_ANSI_O] = SKA_SCANCODE_O;
-	ska_macos_scancode_table[kVK_ANSI_P] = SKA_SCANCODE_P;
-	ska_macos_scancode_table[kVK_ANSI_Q] = SKA_SCANCODE_Q;
-	ska_macos_scancode_table[kVK_ANSI_R] = SKA_SCANCODE_R;
-	ska_macos_scancode_table[kVK_ANSI_S] = SKA_SCANCODE_S;
-	ska_macos_scancode_table[kVK_ANSI_T] = SKA_SCANCODE_T;
-	ska_macos_scancode_table[kVK_ANSI_U] = SKA_SCANCODE_U;
-	ska_macos_scancode_table[kVK_ANSI_V] = SKA_SCANCODE_V;
-	ska_macos_scancode_table[kVK_ANSI_W] = SKA_SCANCODE_W;
-	ska_macos_scancode_table[kVK_ANSI_X] = SKA_SCANCODE_X;
-	ska_macos_scancode_table[kVK_ANSI_Y] = SKA_SCANCODE_Y;
-	ska_macos_scancode_table[kVK_ANSI_Z] = SKA_SCANCODE_Z;
+	ska_macos_scancode_table[kVK_ANSI_A] = ska_scancode_a;
+	ska_macos_scancode_table[kVK_ANSI_B] = ska_scancode_b;
+	ska_macos_scancode_table[kVK_ANSI_C] = ska_scancode_c;
+	ska_macos_scancode_table[kVK_ANSI_D] = ska_scancode_d;
+	ska_macos_scancode_table[kVK_ANSI_E] = ska_scancode_e;
+	ska_macos_scancode_table[kVK_ANSI_F] = ska_scancode_f;
+	ska_macos_scancode_table[kVK_ANSI_G] = ska_scancode_g;
+	ska_macos_scancode_table[kVK_ANSI_H] = ska_scancode_h;
+	ska_macos_scancode_table[kVK_ANSI_I] = ska_scancode_i;
+	ska_macos_scancode_table[kVK_ANSI_J] = ska_scancode_j;
+	ska_macos_scancode_table[kVK_ANSI_K] = ska_scancode_k;
+	ska_macos_scancode_table[kVK_ANSI_L] = ska_scancode_l;
+	ska_macos_scancode_table[kVK_ANSI_M] = ska_scancode_m;
+	ska_macos_scancode_table[kVK_ANSI_N] = ska_scancode_n;
+	ska_macos_scancode_table[kVK_ANSI_O] = ska_scancode_o;
+	ska_macos_scancode_table[kVK_ANSI_P] = ska_scancode_p;
+	ska_macos_scancode_table[kVK_ANSI_Q] = ska_scancode_q;
+	ska_macos_scancode_table[kVK_ANSI_R] = ska_scancode_r;
+	ska_macos_scancode_table[kVK_ANSI_S] = ska_scancode_s;
+	ska_macos_scancode_table[kVK_ANSI_T] = ska_scancode_t;
+	ska_macos_scancode_table[kVK_ANSI_U] = ska_scancode_u;
+	ska_macos_scancode_table[kVK_ANSI_V] = ska_scancode_v;
+	ska_macos_scancode_table[kVK_ANSI_W] = ska_scancode_w;
+	ska_macos_scancode_table[kVK_ANSI_X] = ska_scancode_x;
+	ska_macos_scancode_table[kVK_ANSI_Y] = ska_scancode_y;
+	ska_macos_scancode_table[kVK_ANSI_Z] = ska_scancode_z;
 
 	/* Numbers */
-	ska_macos_scancode_table[kVK_ANSI_0] = SKA_SCANCODE_0;
-	ska_macos_scancode_table[kVK_ANSI_1] = SKA_SCANCODE_1;
-	ska_macos_scancode_table[kVK_ANSI_2] = SKA_SCANCODE_2;
-	ska_macos_scancode_table[kVK_ANSI_3] = SKA_SCANCODE_3;
-	ska_macos_scancode_table[kVK_ANSI_4] = SKA_SCANCODE_4;
-	ska_macos_scancode_table[kVK_ANSI_5] = SKA_SCANCODE_5;
-	ska_macos_scancode_table[kVK_ANSI_6] = SKA_SCANCODE_6;
-	ska_macos_scancode_table[kVK_ANSI_7] = SKA_SCANCODE_7;
-	ska_macos_scancode_table[kVK_ANSI_8] = SKA_SCANCODE_8;
-	ska_macos_scancode_table[kVK_ANSI_9] = SKA_SCANCODE_9;
+	ska_macos_scancode_table[kVK_ANSI_0] = ska_scancode_0;
+	ska_macos_scancode_table[kVK_ANSI_1] = ska_scancode_1;
+	ska_macos_scancode_table[kVK_ANSI_2] = ska_scancode_2;
+	ska_macos_scancode_table[kVK_ANSI_3] = ska_scancode_3;
+	ska_macos_scancode_table[kVK_ANSI_4] = ska_scancode_4;
+	ska_macos_scancode_table[kVK_ANSI_5] = ska_scancode_5;
+	ska_macos_scancode_table[kVK_ANSI_6] = ska_scancode_6;
+	ska_macos_scancode_table[kVK_ANSI_7] = ska_scancode_7;
+	ska_macos_scancode_table[kVK_ANSI_8] = ska_scancode_8;
+	ska_macos_scancode_table[kVK_ANSI_9] = ska_scancode_9;
 
 	/* Function keys */
-	ska_macos_scancode_table[kVK_Return] = SKA_SCANCODE_RETURN;
-	ska_macos_scancode_table[kVK_Escape] = SKA_SCANCODE_ESCAPE;
-	ska_macos_scancode_table[kVK_Delete] = SKA_SCANCODE_BACKSPACE;
-	ska_macos_scancode_table[kVK_Tab] = SKA_SCANCODE_TAB;
-	ska_macos_scancode_table[kVK_Space] = SKA_SCANCODE_SPACE;
+	ska_macos_scancode_table[kVK_Return] = ska_scancode_return;
+	ska_macos_scancode_table[kVK_Escape] = ska_scancode_escape;
+	ska_macos_scancode_table[kVK_Delete] = ska_scancode_backspace;
+	ska_macos_scancode_table[kVK_Tab   ] = ska_scancode_tab;
+	ska_macos_scancode_table[kVK_Space ] = ska_scancode_space;
 
 	/* Symbols */
-	ska_macos_scancode_table[kVK_ANSI_Minus] = SKA_SCANCODE_MINUS;
-	ska_macos_scancode_table[kVK_ANSI_Equal] = SKA_SCANCODE_EQUALS;
-	ska_macos_scancode_table[kVK_ANSI_LeftBracket] = SKA_SCANCODE_LEFTBRACKET;
-	ska_macos_scancode_table[kVK_ANSI_RightBracket] = SKA_SCANCODE_RIGHTBRACKET;
-	ska_macos_scancode_table[kVK_ANSI_Backslash] = SKA_SCANCODE_BACKSLASH;
-	ska_macos_scancode_table[kVK_ANSI_Semicolon] = SKA_SCANCODE_SEMICOLON;
-	ska_macos_scancode_table[kVK_ANSI_Quote] = SKA_SCANCODE_APOSTROPHE;
-	ska_macos_scancode_table[kVK_ANSI_Grave] = SKA_SCANCODE_GRAVE;
-	ska_macos_scancode_table[kVK_ANSI_Comma] = SKA_SCANCODE_COMMA;
-	ska_macos_scancode_table[kVK_ANSI_Period] = SKA_SCANCODE_PERIOD;
-	ska_macos_scancode_table[kVK_ANSI_Slash] = SKA_SCANCODE_SLASH;
+	ska_macos_scancode_table[kVK_ANSI_Minus       ] = ska_scancode_minus;
+	ska_macos_scancode_table[kVK_ANSI_Equal       ] = ska_scancode_equals;
+	ska_macos_scancode_table[kVK_ANSI_LeftBracket ] = ska_scancode_leftbracket;
+	ska_macos_scancode_table[kVK_ANSI_RightBracket] = ska_scancode_rightbracket;
+	ska_macos_scancode_table[kVK_ANSI_Backslash   ] = ska_scancode_backslash;
+	ska_macos_scancode_table[kVK_ANSI_Semicolon   ] = ska_scancode_semicolon;
+	ska_macos_scancode_table[kVK_ANSI_Quote       ] = ska_scancode_apostrophe;
+	ska_macos_scancode_table[kVK_ANSI_Grave       ] = ska_scancode_grave;
+	ska_macos_scancode_table[kVK_ANSI_Comma       ] = ska_scancode_comma;
+	ska_macos_scancode_table[kVK_ANSI_Period      ] = ska_scancode_period;
+	ska_macos_scancode_table[kVK_ANSI_Slash       ] = ska_scancode_slash;
 
-	ska_macos_scancode_table[kVK_CapsLock] = SKA_SCANCODE_CAPSLOCK;
+	ska_macos_scancode_table[kVK_CapsLock] = ska_scancode_capslock;
 
 	/* F keys */
-	ska_macos_scancode_table[kVK_F1] = SKA_SCANCODE_F1;
-	ska_macos_scancode_table[kVK_F2] = SKA_SCANCODE_F2;
-	ska_macos_scancode_table[kVK_F3] = SKA_SCANCODE_F3;
-	ska_macos_scancode_table[kVK_F4] = SKA_SCANCODE_F4;
-	ska_macos_scancode_table[kVK_F5] = SKA_SCANCODE_F5;
-	ska_macos_scancode_table[kVK_F6] = SKA_SCANCODE_F6;
-	ska_macos_scancode_table[kVK_F7] = SKA_SCANCODE_F7;
-	ska_macos_scancode_table[kVK_F8] = SKA_SCANCODE_F8;
-	ska_macos_scancode_table[kVK_F9] = SKA_SCANCODE_F9;
-	ska_macos_scancode_table[kVK_F10] = SKA_SCANCODE_F10;
-	ska_macos_scancode_table[kVK_F11] = SKA_SCANCODE_F11;
-	ska_macos_scancode_table[kVK_F12] = SKA_SCANCODE_F12;
+	ska_macos_scancode_table[kVK_F1] = ska_scancode_f1;
+	ska_macos_scancode_table[kVK_F2] = ska_scancode_f2;
+	ska_macos_scancode_table[kVK_F3] = ska_scancode_f3;
+	ska_macos_scancode_table[kVK_F4] = ska_scancode_f4;
+	ska_macos_scancode_table[kVK_F5] = ska_scancode_f5;
+	ska_macos_scancode_table[kVK_F6] = ska_scancode_f6;
+	ska_macos_scancode_table[kVK_F7] = ska_scancode_f7;
+	ska_macos_scancode_table[kVK_F8] = ska_scancode_f8;
+	ska_macos_scancode_table[kVK_F9] = ska_scancode_f9;
+	ska_macos_scancode_table[kVK_F10] = ska_scancode_f10;
+	ska_macos_scancode_table[kVK_F11] = ska_scancode_f11;
+	ska_macos_scancode_table[kVK_F12] = ska_scancode_f12;
 
 	/* Navigation */
-	ska_macos_scancode_table[kVK_Home] = SKA_SCANCODE_HOME;
-	ska_macos_scancode_table[kVK_PageUp] = SKA_SCANCODE_PAGEUP;
-	ska_macos_scancode_table[kVK_ForwardDelete] = SKA_SCANCODE_DELETE;
-	ska_macos_scancode_table[kVK_End] = SKA_SCANCODE_END;
-	ska_macos_scancode_table[kVK_PageDown] = SKA_SCANCODE_PAGEDOWN;
-	ska_macos_scancode_table[kVK_RightArrow] = SKA_SCANCODE_RIGHT;
-	ska_macos_scancode_table[kVK_LeftArrow] = SKA_SCANCODE_LEFT;
-	ska_macos_scancode_table[kVK_DownArrow] = SKA_SCANCODE_DOWN;
-	ska_macos_scancode_table[kVK_UpArrow] = SKA_SCANCODE_UP;
+	ska_macos_scancode_table[kVK_Home         ] = ska_scancode_home;
+	ska_macos_scancode_table[kVK_PageUp       ] = ska_scancode_pageup;
+	ska_macos_scancode_table[kVK_ForwardDelete] = ska_scancode_delete;
+	ska_macos_scancode_table[kVK_End          ] = ska_scancode_end;
+	ska_macos_scancode_table[kVK_PageDown     ] = ska_scancode_pagedown;
+	ska_macos_scancode_table[kVK_RightArrow   ] = ska_scancode_right;
+	ska_macos_scancode_table[kVK_LeftArrow    ] = ska_scancode_left;
+	ska_macos_scancode_table[kVK_DownArrow    ] = ska_scancode_down;
+	ska_macos_scancode_table[kVK_UpArrow      ] = ska_scancode_up;
 
 	/* Modifiers */
-	ska_macos_scancode_table[kVK_Control] = SKA_SCANCODE_LCTRL;
-	ska_macos_scancode_table[kVK_Shift] = SKA_SCANCODE_LSHIFT;
-	ska_macos_scancode_table[kVK_Option] = SKA_SCANCODE_LALT;
-	ska_macos_scancode_table[kVK_Command] = SKA_SCANCODE_LGUI;
-	ska_macos_scancode_table[kVK_RightControl] = SKA_SCANCODE_RCTRL;
-	ska_macos_scancode_table[kVK_RightShift] = SKA_SCANCODE_RSHIFT;
-	ska_macos_scancode_table[kVK_RightOption] = SKA_SCANCODE_RALT;
+	ska_macos_scancode_table[kVK_Control] = ska_scancode_lctrl;
+	ska_macos_scancode_table[kVK_Shift] = ska_scancode_lshift;
+	ska_macos_scancode_table[kVK_Option] = ska_scancode_lalt;
+	ska_macos_scancode_table[kVK_Command] = ska_scancode_lgui;
+	ska_macos_scancode_table[kVK_RightControl] = ska_scancode_rctrl;
+	ska_macos_scancode_table[kVK_RightShift] = ska_scancode_rshift;
+	ska_macos_scancode_table[kVK_RightOption] = ska_scancode_ralt;
 	/* Note: macOS doesn't distinguish right Command in Carbon */
 }
 
@@ -127,10 +130,10 @@ static ska_window_t* ska_find_window_by_nswindow(NSWindow* nswindow) {
 
 static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 	uint16_t mods = 0;
-	if (flags & NSEventModifierFlagShift) mods |= SKA_KEYMOD_SHIFT;
-	if (flags & NSEventModifierFlagControl) mods |= SKA_KEYMOD_CTRL;
-	if (flags & NSEventModifierFlagOption) mods |= SKA_KEYMOD_ALT;
-	if (flags & NSEventModifierFlagCommand) mods |= SKA_KEYMOD_GUI;
+	if (flags & NSEventModifierFlagShift) mods |= ska_keymod_shift;
+	if (flags & NSEventModifierFlagControl) mods |= ska_keymod_ctrl;
+	if (flags & NSEventModifierFlagOption) mods |= ska_keymod_alt;
+	if (flags & NSEventModifierFlagCommand) mods |= ska_keymod_gui;
 	return mods;
 }
 
@@ -152,8 +155,8 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 
 	if (width != self.window->width || height != self.window->height) {
 		ska_event_t event = {0};
-		event.type = SKA_EVENT_WINDOW_RESIZED;
-		event.timestamp = (uint32_t)ska_get_ticks();
+		event.type = ska_event_window_resized;
+		event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 		event.window.window_id = self.window->id;
 		event.window.data1 = width;
 		event.window.data2 = height;
@@ -183,8 +186,8 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 
 	if (x != self.window->x || y != self.window->y) {
 		ska_event_t event = {0};
-		event.type = SKA_EVENT_WINDOW_MOVED;
-		event.timestamp = (uint32_t)ska_get_ticks();
+		event.type = ska_event_window_moved;
+		event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 		event.window.window_id = self.window->id;
 		event.window.data1 = x;
 		event.window.data2 = y;
@@ -198,8 +201,8 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 	if (!self.window) return;
 
 	ska_event_t event = {0};
-	event.type = SKA_EVENT_WINDOW_FOCUS_GAINED;
-	event.timestamp = (uint32_t)ska_get_ticks();
+	event.type = ska_event_window_focus_gained;
+	event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 	event.window.window_id = self.window->id;
 	self.window->has_focus = true;
 	ska_post_event(&event);
@@ -209,8 +212,8 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 	if (!self.window) return;
 
 	ska_event_t event = {0};
-	event.type = SKA_EVENT_WINDOW_FOCUS_LOST;
-	event.timestamp = (uint32_t)ska_get_ticks();
+	event.type = ska_event_window_focus_lost;
+	event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 	event.window.window_id = self.window->id;
 	self.window->has_focus = false;
 	ska_post_event(&event);
@@ -220,8 +223,8 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 	if (!self.window) return YES;
 
 	ska_event_t event = {0};
-	event.type = SKA_EVENT_WINDOW_CLOSE;
-	event.timestamp = (uint32_t)ska_get_ticks();
+	event.type = ska_event_window_close;
+	event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 	event.window.window_id = self.window->id;
 	self.window->should_close = true;
 	ska_post_event(&event);
@@ -233,8 +236,8 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 	if (!self.window) return;
 
 	ska_event_t event = {0};
-	event.type = SKA_EVENT_WINDOW_MINIMIZED;
-	event.timestamp = (uint32_t)ska_get_ticks();
+	event.type = ska_event_window_minimized;
+	event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 	event.window.window_id = self.window->id;
 	ska_post_event(&event);
 }
@@ -243,8 +246,8 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 	if (!self.window) return;
 
 	ska_event_t event = {0};
-	event.type = SKA_EVENT_WINDOW_RESTORED;
-	event.timestamp = (uint32_t)ska_get_ticks();
+	event.type = ska_event_window_restored;
+	event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 	event.window.window_id = self.window->id;
 	ska_post_event(&event);
 }
@@ -309,11 +312,11 @@ bool ska_platform_window_create(
 		/* Determine window style */
 		NSWindowStyleMask style = NSWindowStyleMaskTitled;
 
-		if (flags & SKA_WINDOW_BORDERLESS) {
+		if (flags & ska_window_borderless) {
 			style = NSWindowStyleMaskBorderless;
 		} else {
 			style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable;
-			if (flags & SKA_WINDOW_RESIZABLE) {
+			if (flags & ska_window_resizable) {
 				style |= NSWindowStyleMaskResizable;
 			}
 		}
@@ -381,11 +384,11 @@ bool ska_platform_window_create(
 		window->dpi_scale = ska_platform_get_dpi_scale(window);
 
 		/* Apply initial state */
-		if (flags & SKA_WINDOW_MAXIMIZED) {
+		if (flags & ska_window_maximized) {
 			[nswindow zoom:nil];
 		}
 
-		if (!(flags & SKA_WINDOW_HIDDEN)) {
+		if (!(flags & ska_window_hidden)) {
 			[nswindow makeKeyAndOrderFront:nil];
 			window->is_visible = true;
 		}
@@ -661,7 +664,7 @@ void ska_platform_pump_events(void) {
 			}
 
 			ska_event_t event = {0};
-			event.timestamp = (uint32_t)ska_get_ticks();
+			event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 
 			switch (nsevent.type) {
 				case NSEventTypeKeyDown:
@@ -670,7 +673,7 @@ void ska_platform_pump_events(void) {
 						bool pressed = (nsevent.type == NSEventTypeKeyDown);
 						unsigned short keycode = nsevent.keyCode;
 
-						event.type = pressed ? SKA_EVENT_KEY_DOWN : SKA_EVENT_KEY_UP;
+						event.type = pressed ? ska_event_key_down : ska_event_key_up;
 						event.keyboard.window_id = window->id;
 						event.keyboard.pressed = pressed;
 						event.keyboard.repeat = nsevent.isARepeat;
@@ -678,7 +681,7 @@ void ska_platform_pump_events(void) {
 						event.keyboard.modifiers = ska_macos_get_modifiers(nsevent.modifierFlags);
 
 						/* Update input state */
-						if (event.keyboard.scancode != SKA_SCANCODE_UNKNOWN) {
+						if (event.keyboard.scancode != ska_scancode_unknown) {
 							g_ska.input_state.keyboard[event.keyboard.scancode] = pressed ? 1 : 0;
 						}
 						g_ska.input_state.key_modifiers = event.keyboard.modifiers;
@@ -689,7 +692,7 @@ void ska_platform_pump_events(void) {
 						if (pressed && nsevent.characters.length > 0) {
 							const char* utf8 = [nsevent.characters UTF8String];
 							if (utf8 && strlen(utf8) > 0) {
-								event.type = SKA_EVENT_TEXT_INPUT;
+								event.type = ska_event_text_input;
 								event.text.window_id = window->id;
 								strncpy(event.text.text, utf8, sizeof(event.text.text) - 1);
 								ska_post_event(&event);
@@ -708,7 +711,7 @@ void ska_platform_pump_events(void) {
 						int32_t x = (int32_t)location.x;
 						int32_t y = (int32_t)(window->height - location.y);  /* Flip Y */
 
-						event.type = SKA_EVENT_MOUSE_MOTION;
+						event.type = ska_event_mouse_motion;
 						event.mouse_motion.window_id = window->id;
 						event.mouse_motion.x = x;
 						event.mouse_motion.y = y;
@@ -738,20 +741,21 @@ void ska_platform_pump_events(void) {
 
 						ska_mouse_button_ button;
 						if (nsevent.type == NSEventTypeLeftMouseDown || nsevent.type == NSEventTypeLeftMouseUp) {
-							button = SKA_MOUSE_BUTTON_LEFT;
+							button = ska_mouse_button_left;
 						} else if (nsevent.type == NSEventTypeRightMouseDown || nsevent.type == NSEventTypeRightMouseUp) {
-							button = SKA_MOUSE_BUTTON_RIGHT;
+							button = ska_mouse_button_right;
 						} else {
 							// OtherMouse can be middle, X1, or X2
 							NSInteger buttonNumber = nsevent.buttonNumber;
 							if (buttonNumber == 2) {
-								button = SKA_MOUSE_BUTTON_MIDDLE;
+								button = ska_mouse_button_middle;
 							} else if (buttonNumber == 3) {
 								button = ska_mouse_button_x1;
 							} else if (buttonNumber == 4) {
 								button = ska_mouse_button_x2;
 							} else {
-								button = SKA_MOUSE_BUTTON_MIDDLE; // Fallback for unknown buttons
+								button = ska_mouse_button_middle; // Fallback for unknown buttons
+								// TODO: ??
 							}
 						}
 
@@ -759,7 +763,7 @@ void ska_platform_pump_events(void) {
 						int32_t x = (int32_t)location.x;
 						int32_t y = (int32_t)(window->height - location.y);
 
-						event.type = pressed ? SKA_EVENT_MOUSE_BUTTON_DOWN : SKA_EVENT_MOUSE_BUTTON_UP;
+						event.type = pressed ? ska_event_mouse_button_down : ska_event_mouse_button_up;
 						event.mouse_button.window_id = window->id;
 						event.mouse_button.button = button;
 						event.mouse_button.pressed = pressed;
@@ -785,7 +789,7 @@ void ska_platform_pump_events(void) {
 						CGFloat deltaX = nsevent.scrollingDeltaX;
 						CGFloat deltaY = nsevent.scrollingDeltaY;
 
-						event.type = SKA_EVENT_MOUSE_WHEEL;
+						event.type = ska_event_mouse_wheel;
 						event.mouse_wheel.window_id = window->id;
 						event.mouse_wheel.x = (int32_t)deltaX;
 						event.mouse_wheel.y = (int32_t)deltaY;
@@ -808,9 +812,6 @@ void ska_platform_pump_events(void) {
 		ska_macos_check_file_dialog();
 	}
 }
-
-/* Forward declaration for file dialog check */
-static void ska_macos_check_file_dialog(void);
 
 /////////////////////////////////////////
 // macOS specific subset of Vulkan header
