@@ -8,6 +8,7 @@
 
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>  /* For key codes */
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 /* Forward declaration for file dialog check */
 static void ska_macos_check_file_dialog(void);
@@ -745,17 +746,15 @@ void ska_platform_pump_events(void) {
 						} else if (nsevent.type == NSEventTypeRightMouseDown || nsevent.type == NSEventTypeRightMouseUp) {
 							button = ska_mouse_button_right;
 						} else {
-							// OtherMouse can be middle, X1, or X2
-							NSInteger buttonNumber = nsevent.buttonNumber;
-							if (buttonNumber == 2) {
-								button = ska_mouse_button_middle;
-							} else if (buttonNumber == 3) {
-								button = ska_mouse_button_x1;
-							} else if (buttonNumber == 4) {
-								button = ska_mouse_button_x2;
-							} else {
-								button = ska_mouse_button_middle; // Fallback for unknown buttons
-								// TODO: ??
+							/* OtherMouse: buttonNumber 2=middle, 3=X1, 4=X2 */
+							switch (nsevent.buttonNumber) {
+								case 2: button = ska_mouse_button_middle; break;
+								case 3: button = ska_mouse_button_x1;     break;
+								case 4: button = ska_mouse_button_x2;     break;
+								default: break; /* Unknown button, abandon event */
+							}
+							if (nsevent.buttonNumber < 2 || nsevent.buttonNumber > 4) {
+								break;
 							}
 						}
 
@@ -1004,7 +1003,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 
 			/* Add file type filters */
 			if (request->filters && request->filter_count > 0) {
-				NSMutableArray* types = [NSMutableArray array];
+				NSMutableArray<UTType*>* types = [NSMutableArray array];
 				for (int32_t i = 0; i < request->filter_count; i++) {
 					/* Get extensions (space-separated) */
 					const char* exts = ska_filter_get_exts(&request->filters[i]);
@@ -1019,14 +1018,17 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 							ext += 1;
 						}
 						if (strlen(ext) > 0 && strcmp(ext, "*") != 0) {
-							[types addObject:[NSString stringWithUTF8String:ext]];
+							UTType* type = [UTType typeWithFilenameExtension:[NSString stringWithUTF8String:ext]];
+							if (type) {
+								[types addObject:type];
+							}
 						}
 						token = strtok(NULL, " ");
 					}
 					free(extsCopy);
 				}
 				if ([types count] > 0) {
-					[panel setAllowedFileTypes:types];
+					[panel setAllowedContentTypes:types];
 				}
 			}
 
@@ -1060,7 +1062,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 
 				/* Add file type filters */
 				if (request->filters && request->filter_count > 0) {
-					NSMutableArray* types = [NSMutableArray array];
+					NSMutableArray<UTType*>* types = [NSMutableArray array];
 					for (int32_t i = 0; i < request->filter_count; i++) {
 						/* Get extensions (space-separated) */
 						const char* exts = ska_filter_get_exts(&request->filters[i]);
@@ -1074,14 +1076,17 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 								ext += 1;
 							}
 							if (strlen(ext) > 0 && strcmp(ext, "*") != 0) {
-								[types addObject:[NSString stringWithUTF8String:ext]];
+								UTType* type = [UTType typeWithFilenameExtension:[NSString stringWithUTF8String:ext]];
+								if (type) {
+									[types addObject:type];
+								}
 							}
 							token = strtok(NULL, " ");
 						}
 						free(extsCopy);
 					}
 					if ([types count] > 0) {
-						[panel setAllowedFileTypes:types];
+						[panel setAllowedContentTypes:types];
 					}
 				}
 			}
