@@ -16,6 +16,17 @@
 #include <stdbool.h>
 #include <string.h>
 
+// Callback for ska_dir_iterate demonstration
+static bool dir_iterate_callback(void* context, const ska_dir_entry_t* entry) {
+	int32_t* count = (int32_t*)context;
+	(*count)++;
+	ska_log(ska_log_info, "[DIR]   %s%s (%zu bytes)",
+		entry->name,
+		entry->is_dir ? "/" : "",
+		entry->size);
+	return true;  // Continue iteration
+}
+
 int32_t main(int argc, char** argv) {
 	// Parse command line arguments
 	int32_t test_frames = 0;  // 0 = disabled, >0 = exit after N frames
@@ -146,6 +157,15 @@ int32_t main(int argc, char** argv) {
 			ska_log(ska_log_info, "[FILE] Binary file read successfully (%zu bytes)", read_size);
 			ska_file_free_data(read_binary);
 		}
+	}
+
+	// Directory iteration test
+	ska_log(ska_log_info, "[DIR] Testing directory iteration on current directory:");
+	int32_t entry_count = 0;
+	if (ska_dir_iterate(".", &entry_count, dir_iterate_callback)) {
+		ska_log(ska_log_info, "[DIR] Iteration complete: %d entries found", entry_count);
+	} else {
+		ska_log(ska_log_warn, "[DIR] Iteration failed: %s", ska_error_get());
 	}
 
 // ========================================================================

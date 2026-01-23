@@ -901,6 +901,27 @@ SKA_API bool ska_file_exists(const char* filename);
 // @return File size in bytes, or 0 on failure (ambiguous with empty file)
 SKA_API size_t ska_file_size(const char* filename);
 
+// Directory entry information passed to ska_dir_iterate callback
+typedef struct ska_dir_entry_t {
+	const char* name;      // Entry name only, not full path
+	bool        is_dir;    // true if directory, false if file
+	size_t      size;      // File size in bytes (0 for directories)
+} ska_dir_entry_t;
+
+// Callback for ska_dir_iterate. Return true to continue, false to stop iteration.
+typedef bool (*ska_dir_iterate_fn)(void* context, const ska_dir_entry_t* entry);
+
+// Iterate over directory entries, invoking callback for each entry.
+// Non-recursive by default; callers can recurse by calling ska_dir_iterate() from the callback.
+// Skips "." and ".." entries automatically.
+// On Android, this only works for filesystem paths, not assets.
+//
+// @param path Directory path (UTF-8)
+// @param opt_context User data passed to callback (can be NULL)
+// @param callback Function called for each entry (required, not NULL)
+// @return true on success (including when callback stops iteration), false on failure
+SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterate_fn callback);
+
 // Get current working directory.
 // Writes the path to ref_buffer (null-terminated). On failure, ref_buffer[0] is set to '\0'.
 //

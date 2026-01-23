@@ -16,6 +16,7 @@
 #else
 #include <unistd.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #endif
 
 #ifdef SKA_PLATFORM_MACOS
@@ -193,6 +194,155 @@ SKA_API size_t ska_file_size(const char* filename) {
 		return 0;
 	}
 	return (size_t)st.st_size;
+#endif
+}
+
+// ============================================================================
+// Directory Iteration
+// ============================================================================
+
+SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterate_fn callback) {
+	if (!path) {
+		ska_set_error("ska_dir_iterate: NULL path");
+		return false;
+	}
+	if (!callback) {
+		ska_set_error("ska_dir_iterate: NULL callback");
+		return false;
+	}
+
+#ifdef SKA_PLATFORM_WIN32
+	// Windows: use FindFirstFile/FindNextFile
+	size_t path_len    = strlen(path);
+	char*  search_path = (char*)malloc(path_len + 3);  // path + "\\*" + null
+	if (!search_path) {
+		ska_set_error("ska_dir_iterate: Failed to allocate memory");
+		return false;
+	}
+
+	// Build search pattern: path\*
+	memcpy(search_path, path, path_len);
+	if (path_len > 0 && path[path_len - 1] != '\\' && path[path_len - 1] != '/') {
+		search_path[path_len    ] = '\\';
+		search_path[path_len + 1] = '*';
+		search_path[path_len + 2] = '\0';
+	} else {
+		search_path[path_len    ] = '*';
+		search_path[path_len + 1] = '\0';
+	}
+
+	WIN32_FIND_DATAA find_data;
+	HANDLE           find_handle = FindFirstFileA(search_path, &find_data);
+	free(search_path);
+
+	if (find_handle == INVALID_HANDLE_VALUE) {
+		DWORD err = GetLastError();
+		if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
+			ska_set_error("ska_dir_iterate: Directory not found '%s'", path);
+		} else {
+			ska_set_error("ska_dir_iterate: Failed to open directory '%s' (error %lu)", path, err);
+		}
+		return false;
+	}
+
+	do {
+		// Skip "." and ".."
+		if (find_data.cFileName[0] == '.') {
+			if (find_data.cFileName[1] == '\0') continue;
+			if (find_data.cFileName[1] == '.' && find_data.cFileName[2] == '\0') continue;
+		}
+
+		ska_dir_entry_t dir_entry;
+		dir_entry.name   = find_data.cFileName;
+		dir_entry.is_dir = (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		dir_entry.size   = dir_entry.is_dir ? 0 : ((size_t)find_data.nFileSizeHigh << 32) | find_data.nFileSizeLow;
+
+		if (!callback(opt_context, &dir_entry)) {
+			FindClose(find_handle);
+			return true; // Callback requested stop, not an error
+		}
+	} while (FindNextFileA(find_handle, &find_data));
+
+	FindClose(find_handle);
+	return true;
+
+#else
+	// POSIX: use opendir/readdir (Linux, macOS, Android)
+	DIR* dir = opendir(path);
+	if (!dir) {
+		ska_set_error("ska_dir_iterate: Failed to open directory '%s'", path);
+		return false;
+	}
+
+	// Pre-allocate buffer for full paths (reused across iterations)
+	size_t path_len = strlen(path);
+	size_t buffer_size = path_len + 1 + 256 + 1;  // path + '/' + NAME_MAX + null
+	char*  full_path = (char*)malloc(buffer_size);
+	if (!full_path) {
+		closedir(dir);
+		ska_set_error("ska_dir_iterate: Failed to allocate memory");
+		return false;
+	}
+	memcpy(full_path, path, path_len);
+	full_path[path_len] = '/';
+
+	struct dirent* entry;
+	while ((entry = readdir(dir)) != NULL) {
+		// Skip "." and ".."
+		if (entry->d_name[0] == '.') {
+			if (entry->d_name[1] == '\0') continue;
+			if (entry->d_name[1] == '.' && entry->d_name[2] == '\0') continue;
+		}
+
+		ska_dir_entry_t dir_entry;
+		dir_entry.name   = entry->d_name;
+		dir_entry.is_dir = false;
+		dir_entry.size   = 0;
+
+		// d_type is a dirent field that gives the entry type (file/dir) without
+		// needing stat(). Not all filesystems support it (returns DT_UNKNOWN).
+		bool need_stat = true;
+#if defined(_DIRENT_HAVE_D_TYPE) || defined(SKA_PLATFORM_ANDROID)
+		if (entry->d_type != DT_UNKNOWN) {
+			dir_entry.is_dir = (entry->d_type == DT_DIR);
+			need_stat        = !dir_entry.is_dir; // Still need stat for file size
+		}
+#endif
+
+		if (need_stat) {
+			// Build full path for stat
+			size_t name_len = strlen(entry->d_name);
+			if (path_len + 1 + name_len + 1 > buffer_size) {
+				// Reallocate if name is longer than expected
+				buffer_size = path_len + 1 + name_len + 1;
+				char* new_buffer = (char*)realloc(full_path, buffer_size);
+				if (!new_buffer) {
+					// Skip this entry on allocation failure
+					continue;
+				}
+				full_path = new_buffer;
+			}
+			memcpy(full_path + path_len + 1, entry->d_name, name_len + 1);
+
+			struct stat st;
+			if (stat(full_path, &st) == 0) {
+				dir_entry.is_dir = S_ISDIR(st.st_mode);
+				if (!dir_entry.is_dir) {
+					dir_entry.size = (size_t)st.st_size;
+				}
+			}
+		}
+
+		if (!callback(opt_context, &dir_entry)) {
+			free(full_path);
+			closedir(dir);
+			return true;  // Callback requested stop, not an error
+		}
+	}
+
+	free(full_path);
+	closedir(dir);
+	return true;
 #endif
 }
 
