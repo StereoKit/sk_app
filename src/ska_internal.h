@@ -347,7 +347,7 @@ bool  ska_platform_clipboard_set_text(const char* text);
 // ============================================================================
 
 #define SKA_MAX_FILE_DIALOGS 8
-#define SKA_MAX_DIALOG_PATHS 64
+#define SKA_MAX_DIALOG_PATHS 10
 
 // Internal storage for file dialog result paths
 typedef struct ska_file_dialog_result_t {

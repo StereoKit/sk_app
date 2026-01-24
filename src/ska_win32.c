@@ -1077,6 +1077,8 @@ static char* ska_win32_exts_to_pattern(const char* exts) {
 }
 
 // Pending file dialog thread state
+#define SKA_FILE_DIALOG_BUFFER_SIZE 4096  // For multi-select (10 files max)
+
 typedef struct {
 	HANDLE                   thread;
 	ska_file_dialog_id_t     id;
@@ -1084,11 +1086,11 @@ typedef struct {
 	wchar_t*                 title;
 	wchar_t*                 default_name;
 	wchar_t*                 filter;
+	wchar_t*                 result_buffer;  // Heap-allocated when dialog opens
 	bool                     allow_multiple;
 	volatile bool            active;
 	volatile bool            completed;
 	volatile bool            cancelled;
-	wchar_t                  result_buffer[32768];  // For multi-select
 } ska_win32_file_dialog_t;
 
 static ska_win32_file_dialog_t g_win32_file_dialog = {0};
@@ -1105,7 +1107,15 @@ static DWORD WINAPI ska_win32_file_dialog_thread(LPVOID param) {
 	CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
 	bool success = false;
-	g_win32_file_dialog.result_buffer[0] = L'\0';
+
+	// Allocate result buffer
+	g_win32_file_dialog.result_buffer = (wchar_t*)ska_calloc(SKA_FILE_DIALOG_BUFFER_SIZE, sizeof(wchar_t));
+	if (!g_win32_file_dialog.result_buffer) {
+		g_win32_file_dialog.cancelled = true;
+		g_win32_file_dialog.completed = true;
+		CoUninitialize();
+		return 0;
+	}
 
 	if (g_win32_file_dialog.type == ska_file_dialog_open_folder) {
 		// Use SHBrowseForFolder for folder selection
@@ -1126,7 +1136,7 @@ static DWORD WINAPI ska_win32_file_dialog_thread(LPVOID param) {
 		ofn.lStructSize = sizeof(ofn);
 		ofn.hwndOwner = NULL;
 		ofn.lpstrFile = g_win32_file_dialog.result_buffer;
-		ofn.nMaxFile = sizeof(g_win32_file_dialog.result_buffer) / sizeof(wchar_t);
+		ofn.nMaxFile = SKA_FILE_DIALOG_BUFFER_SIZE;
 		ofn.lpstrFilter = g_win32_file_dialog.filter;
 		ofn.nFilterIndex = 1;
 		ofn.lpstrTitle = g_win32_file_dialog.title;
@@ -1135,13 +1145,13 @@ static DWORD WINAPI ska_win32_file_dialog_thread(LPVOID param) {
 		ofn.lpstrInitialDir = NULL;
 
 		if (g_win32_file_dialog.type == ska_file_dialog_save) {
-			ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+			ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 			if (g_win32_file_dialog.default_name) {
 				wcscpy(g_win32_file_dialog.result_buffer, g_win32_file_dialog.default_name);
 			}
 			success = GetSaveFileNameW(&ofn) != 0;
 		} else {
-			ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+			ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 			if (g_win32_file_dialog.allow_multiple) {
 				ofn.Flags |= OFN_ALLOWMULTISELECT | OFN_EXPLORER;
 			}
@@ -1168,7 +1178,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 	g_win32_file_dialog.allow_multiple = request->allow_multiple;
 	g_win32_file_dialog.cancelled = false;
 	g_win32_file_dialog.completed = false;
-	g_win32_file_dialog.result_buffer[0] = L'\0';
+	// Note: result_buffer is fully cleared in the dialog thread before use
 
 	// Convert strings to wide
 	if (g_win32_file_dialog.title) { ska_free(g_win32_file_dialog.title); g_win32_file_dialog.title = NULL; }
@@ -1245,7 +1255,7 @@ static void ska_win32_check_file_dialog(void) {
 	ska_file_dialog_result_t* result = ska_file_dialog_result_alloc(g_win32_file_dialog.id, title_utf8);
 	if (title_utf8) ska_free(title_utf8);
 
-	if (!g_win32_file_dialog.cancelled && g_win32_file_dialog.result_buffer[0]) {
+	if (!g_win32_file_dialog.cancelled && g_win32_file_dialog.result_buffer && g_win32_file_dialog.result_buffer[0]) {
 		// Parse result buffer
 		// For multi-select with OFN_EXPLORER: "dir\0file1\0file2\0\0"
 		// For single select: "full_path\0"
@@ -1289,6 +1299,7 @@ static void ska_win32_check_file_dialog(void) {
 	if (g_win32_file_dialog.title) { ska_free(g_win32_file_dialog.title); g_win32_file_dialog.title = NULL; }
 	if (g_win32_file_dialog.default_name) { ska_free(g_win32_file_dialog.default_name); g_win32_file_dialog.default_name = NULL; }
 	if (g_win32_file_dialog.filter) { ska_free(g_win32_file_dialog.filter); g_win32_file_dialog.filter = NULL; }
+	if (g_win32_file_dialog.result_buffer) { ska_free(g_win32_file_dialog.result_buffer); g_win32_file_dialog.result_buffer = NULL; }
 	g_win32_file_dialog.active = false;
 
 	// Post result
