@@ -193,7 +193,6 @@ struct ska_window_t {
 #ifdef SKA_PLATFORM_LINUX
 	Window xwindow;
 	XIC xic;
-	bool mouse_warped;
 #endif
 
 #ifdef SKA_PLATFORM_MACOS
@@ -245,6 +244,7 @@ typedef struct ska_state_t {
 	XIM xim;
 	int32_t xi_opcode;
 	float cached_dpi_scale; // Track DPI changes
+	bool is_xwayland;       // Running under XWayland (X11 on Wayland)
 #endif
 
 #ifdef SKA_PLATFORM_MACOS

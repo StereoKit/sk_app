@@ -9,7 +9,9 @@
 
 #include <X11/keysym.h>
 #include <X11/Xresource.h>
+#include <X11/extensions/Xfixes.h>
 #include <locale.h>
+#include <stdlib.h>
 #include <sys/select.h>
 #include <unistd.h>
 
@@ -152,6 +154,10 @@ bool ska_platform_init(void) {
 	if (!XQueryExtension(g_ska.x_display, "XInputExtension", &g_ska.xi_opcode, &xi_event, &xi_error)) {
 		ska_log(ska_log_warn, "XInput extension not available");
 	}
+
+	// Detect XWayland (X11 running on Wayland compositor)
+	// This affects mouse warp behavior workarounds
+	g_ska.is_xwayland = getenv("WAYLAND_DISPLAY") != NULL;
 
 	return true;
 }
@@ -494,8 +500,21 @@ float ska_platform_get_refresh_rate(const ska_window_t* window) {
 }
 
 void ska_platform_warp_mouse(ska_window_t* ref_window, int32_t x, int32_t y) {
-	ref_window->mouse_warped = true;
+
+	// XWayland workaround: XWarpPointer doesn't work correctly on XWayland
+	// without hiding/showing the cursor. This fix is from Blender:
+	// https://developer.blender.org/T53004#467383
+	// https://github.com/blender/blender/blob/a8f7d41d3898/intern/ghost/intern/GHOST_SystemX11.cpp#L1680
+	if (g_ska.is_xwayland) {
+		XFixesHideCursor(g_ska.x_display, ref_window->xwindow);
+	}
+
 	XWarpPointer(g_ska.x_display, None, ref_window->xwindow, 0, 0, 0, 0, x, y);
+
+	if (g_ska.is_xwayland) {
+		XFixesShowCursor(g_ska.x_display, ref_window->xwindow);
+	}
+
 	XFlush(g_ska.x_display);
 }
 
@@ -751,11 +770,6 @@ void ska_platform_pump_events(void) {
 			}
 
 			case MotionNotify: {
-				if (window->mouse_warped) {
-					window->mouse_warped = false;
-					break;
-				}
-
 				event.type = ska_event_mouse_motion;
 				event.mouse_motion.window_id = window->id;
 				event.mouse_motion.x = xev.xmotion.x;
