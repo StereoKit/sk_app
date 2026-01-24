@@ -16,7 +16,7 @@ cmake -B build
 cmake --build build -j8
 
 # To run
-./build/examples/simple_window/simple_window
+./build/examples/test_window/test_window
 ```
 
 ### Windows (Cross-compile with MinGW)
@@ -29,7 +29,7 @@ cmake -B build-mingw -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-toolchain.cmake -DCMAKE_
 cmake --build build-mingw -j8
 
 # To run with Wine
-wine ./build-mingw/examples/simple_window/simple_window.exe
+wine ./build-mingw/examples/test_window/test_window.exe
 ```
 
 ### Android
@@ -44,14 +44,14 @@ Prerequisites:
 # Quick build for arm64 (default)
 ./build_android.sh
 # Install and run on connected device or simulator
-cmake --build build-android --target simple_window-run
+cmake --build build-android --target test_window-run
 ```
 
 ```sh
 # OR x86_64
 ./build_android.sh x86
 # Install and run on connected device or simulator
-cmake --build build-androidx86 --target simple_window-run
+cmake --build build-androidx86 --target test_window-run
 ```
 
 #### Android manual build
@@ -65,10 +65,10 @@ cmake -B build-android \
     -DCMAKE_BUILD_TYPE=Release
 cmake --build build-android -j8
 # Build the APK
-cmake --build build-android --target simple_window-apk
+cmake --build build-android --target test_window-apk
 # Install and run on connected device or simulator
-adb install -r build-android/examples/simple_window.apk
-adb shell am start -n net.stereokit.simple_window/net.stereokit.sk_app.SkAppActivity
+adb install -r build-android/examples/test_window/test_window.apk
+adb shell am start -n net.stereokit.test_window/net.stereokit.sk_app.SkAppActivity
 ```
 
 ```sh
@@ -80,23 +80,23 @@ cmake -B build-androidx86 \
     -DCMAKE_BUILD_TYPE=Release
 cmake --build build-androidx86 -j8
 # Build the APK
-cmake --build build-androidx86 --target simple_window-apk
+cmake --build build-androidx86 --target test_window-apk
 # Install and run on connected device or simulator
-adb install -r build-androidx86/examples/simple_window/simple_window.apk
-adb shell am start -n net.stereokit.simple_window/net.stereokit.sk_app.SkAppActivity
+adb install -r build-androidx86/examples/test_window/test_window.apk
+adb shell am start -n net.stereokit.test_window/net.stereokit.sk_app.SkAppActivity
 ```
 
 ```sh
 # Install and run on connected device or simulator
-adb install -r build-android/examples/simple_window/simple_window.apk
-adb shell am start -n net.stereokit.simple_window/net.stereokit.sk_app.SkAppActivity
+adb install -r build-android/examples/test_window/test_window.apk
+adb shell am start -n net.stereokit.test_window/net.stereokit.sk_app.SkAppActivity
 ```
 
 #### Filtering Android logcat
 
 ```sh
 # Filtered logcat of the app
-adb logcat -v color --uid `adb shell pm list package -U net.stereokit.simple_window | cut -d ":" -f3`
+adb logcat -v color --uid `adb shell pm list package -U net.stereokit.test_window | cut -d ":" -f3`
 ```
 
 ### Available commands

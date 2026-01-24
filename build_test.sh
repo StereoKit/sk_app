@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # sk_app build and test script
-# Builds simple_window for Linux, Windows (MinGW), and Android
-# Reports binary paths and sizes
+# Builds and tests for Linux, Windows (MinGW), and Android
+# Reports build status, binary sizes, and test results
 #
 
 set -e
@@ -15,11 +15,13 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Default settings
 BUILD_TYPE="Debug"
 JOBS=$(nproc 2>/dev/null || echo 4)
+VERBOSE=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -28,11 +30,16 @@ while [[ $# -gt 0 ]]; do
 			BUILD_TYPE="Release"
 			shift
 			;;
+		-v|--verbose)
+			VERBOSE="-v"
+			shift
+			;;
 		-h|--help)
 			echo "Usage: $0 [options]"
 			echo ""
 			echo "Options:"
 			echo "  -r, --release    Build in Release mode (default: Debug)"
+			echo "  -v, --verbose    Verbose test output"
 			echo "  -h, --help       Show this help"
 			exit 0
 			;;
@@ -55,6 +62,9 @@ echo ""
 declare -A RESULTS
 declare -A BINARIES
 declare -A SIZES
+declare -A TEST_PASSED
+declare -A TEST_FAILED
+declare -A TEST_SKIPPED
 
 # Helper function to format size
 format_size() {
@@ -68,10 +78,38 @@ format_size() {
 	fi
 }
 
+# Helper function to parse test output
+parse_test_output() {
+	local output="$1"
+	local platform="$2"
+
+	# Extract test counts from output
+	local passed=$(echo "$output" | grep -oP 'Passed:\s*\K\d+' | tail -1)
+	local failed=$(echo "$output" | grep -oP 'Failed:\s*\K\d+' | tail -1)
+	local skipped=$(echo "$output" | grep -oP 'Skipped:\s*\K\d+' | tail -1)
+
+	TEST_PASSED[$platform]="${passed:-0}"
+	TEST_FAILED[$platform]="${failed:-0}"
+	TEST_SKIPPED[$platform]="${skipped:-0}"
+
+	# Check for overall result
+	if echo "$output" | grep -q "\[TEST RESULT: PASS\]"; then
+		return 0
+	elif echo "$output" | grep -q "\[TEST RESULT: FAIL\]"; then
+		return 1
+	else
+		# Fallback: check if we got any test output at all
+		if [[ -n "$passed" ]] && [[ "$failed" == "0" ]]; then
+			return 0
+		fi
+		return 1
+	fi
+}
+
 # ============================================================================
 # Linux Build
 # ============================================================================
-echo -e "${BLUE}[1/3] Building for Linux...${NC}"
+echo -e "${BLUE}[1/4] Building for Linux...${NC}"
 
 BUILD_DIR_LINUX="build"
 if [[ "$BUILD_TYPE" == "Release" ]]; then
@@ -83,7 +121,7 @@ LINUX_BUILD_CMD="cmake --build $BUILD_DIR_LINUX -j$JOBS"
 if $LINUX_CMAKE_CMD > /dev/null 2>&1; then
 	if $LINUX_BUILD_CMD > /dev/null 2>&1; then
 		RESULTS[linux]="OK"
-		BINARIES[linux]="$SCRIPT_DIR/$BUILD_DIR_LINUX/examples/simple_window/simple_window"
+		BINARIES[linux]="$SCRIPT_DIR/$BUILD_DIR_LINUX/examples/test_window/test_window"
 		if [[ -f "${BINARIES[linux]}" ]]; then
 			SIZES[linux]=$(stat -c%s "${BINARIES[linux]}" 2>/dev/null || stat -f%z "${BINARIES[linux]}" 2>/dev/null)
 		fi
@@ -102,7 +140,7 @@ fi
 # ============================================================================
 # Windows Build (MinGW cross-compile)
 # ============================================================================
-echo -e "${BLUE}[2/3] Building for Windows (MinGW)...${NC}"
+echo -e "${BLUE}[2/4] Building for Windows (MinGW)...${NC}"
 
 BUILD_DIR_WIN="build-win"
 if [[ "$BUILD_TYPE" == "Release" ]]; then
@@ -116,7 +154,7 @@ if command -v x86_64-w64-mingw32-gcc &> /dev/null; then
 	if $WIN_CMAKE_CMD > /dev/null 2>&1; then
 		if $WIN_BUILD_CMD > /dev/null 2>&1; then
 			RESULTS[windows]="OK"
-			BINARIES[windows]="$SCRIPT_DIR/$BUILD_DIR_WIN/examples/simple_window/simple_window.exe"
+			BINARIES[windows]="$SCRIPT_DIR/$BUILD_DIR_WIN/examples/test_window/test_window.exe"
 			if [[ -f "${BINARIES[windows]}" ]]; then
 				SIZES[windows]=$(stat -c%s "${BINARIES[windows]}" 2>/dev/null || stat -f%z "${BINARIES[windows]}" 2>/dev/null)
 			fi
@@ -139,7 +177,7 @@ fi
 # ============================================================================
 # Android Build
 # ============================================================================
-echo -e "${BLUE}[3/3] Building for Android...${NC}"
+echo -e "${BLUE}[3/4] Building for Android (ARM64)...${NC}"
 
 BUILD_DIR_ANDROID="build-android"
 if [[ "$BUILD_TYPE" == "Release" ]]; then
@@ -161,7 +199,7 @@ if [[ -n "$ANDROID_NDK" ]] && [[ -f "$ANDROID_NDK/build/cmake/android.toolchain.
 	if $ANDROID_CMAKE_CMD > /dev/null 2>&1; then
 		if $ANDROID_BUILD_CMD > /dev/null 2>&1; then
 			RESULTS[android]="OK"
-			BINARIES[android]="$SCRIPT_DIR/$BUILD_DIR_ANDROID/examples/simple_window/libsimple_window.so"
+			BINARIES[android]="$SCRIPT_DIR/$BUILD_DIR_ANDROID/examples/test_window/libtest_window.so"
 			if [[ -f "${BINARIES[android]}" ]]; then
 				SIZES[android]=$(stat -c%s "${BINARIES[android]}" 2>/dev/null || stat -f%z "${BINARIES[android]}" 2>/dev/null)
 			fi
@@ -182,38 +220,171 @@ else
 fi
 
 # ============================================================================
+# Android x64 Build (for Waydroid)
+# ============================================================================
+echo -e "${BLUE}[4/4] Building for Android (x64/Waydroid)...${NC}"
+
+BUILD_DIR_ANDROID_X64="build-android-x64"
+if [[ "$BUILD_TYPE" == "Release" ]]; then
+	BUILD_DIR_ANDROID_X64="build-android-x64-release"
+fi
+
+# Only build if Waydroid is available
+if command -v waydroid &> /dev/null; then
+	if [[ -n "$ANDROID_NDK" ]] && [[ -f "$ANDROID_NDK/build/cmake/android.toolchain.cmake" ]]; then
+		ANDROID_X64_CMAKE_CMD="cmake -B $BUILD_DIR_ANDROID_X64 -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-32 -DCMAKE_BUILD_TYPE=$BUILD_TYPE"
+		ANDROID_X64_BUILD_CMD="cmake --build $BUILD_DIR_ANDROID_X64 -j$JOBS"
+		ANDROID_X64_APK_CMD="cmake --build $BUILD_DIR_ANDROID_X64 --target test_window-apk"
+		if $ANDROID_X64_CMAKE_CMD > /dev/null 2>&1; then
+			if $ANDROID_X64_BUILD_CMD > /dev/null 2>&1; then
+				# Build the APK
+				if $ANDROID_X64_APK_CMD > /dev/null 2>&1; then
+					RESULTS[android_x64]="OK"
+					BINARIES[android_x64]="$SCRIPT_DIR/$BUILD_DIR_ANDROID_X64/examples/test_window/test_window.apk"
+					if [[ -f "${BINARIES[android_x64]}" ]]; then
+						SIZES[android_x64]=$(stat -c%s "${BINARIES[android_x64]}" 2>/dev/null || stat -f%z "${BINARIES[android_x64]}" 2>/dev/null)
+					fi
+					echo -e "  ${GREEN}Build successful${NC}"
+				else
+					RESULTS[android_x64]="APK FAILED"
+					echo -e "  ${RED}APK build failed${NC}"
+					echo -e "  ${RED}Command: $ANDROID_X64_APK_CMD${NC}"
+				fi
+			else
+				RESULTS[android_x64]="BUILD FAILED"
+				echo -e "  ${RED}Build failed${NC}"
+				echo -e "  ${RED}Command: $ANDROID_X64_BUILD_CMD${NC}"
+			fi
+		else
+			RESULTS[android_x64]="CMAKE FAILED"
+			echo -e "  ${RED}CMake configuration failed${NC}"
+			echo -e "  ${RED}Command: $ANDROID_X64_CMAKE_CMD${NC}"
+		fi
+	else
+		RESULTS[android_x64]="SKIPPED (NDK not found)"
+		echo -e "  ${YELLOW}Skipped (ANDROID_NDK not set or not found)${NC}"
+	fi
+else
+	RESULTS[android_x64]="SKIPPED (Waydroid not found)"
+	echo -e "  ${YELLOW}Skipped (Waydroid not installed)${NC}"
+fi
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 echo ""
-echo -e "${BLUE}Running tests...${NC}"
+echo -e "${BLUE}================================================${NC}"
+echo -e "${BLUE}  Running Tests${NC}"
+echo -e "${BLUE}================================================${NC}"
+echo ""
 
 # Test Linux build
 if [[ "${RESULTS[linux]}" == "OK" ]]; then
-	echo -e "  Testing Linux binary..."
-	TEST_OUTPUT=$(cd /tmp && "${BINARIES[linux]}" -test 2>&1 || true)
-	if echo "$TEST_OUTPUT" | grep -q "\[CWD\]" && echo "$TEST_OUTPUT" | grep -q "\[TEST\] Exiting"; then
-		RESULTS[linux_test]="OK"
-		echo -e "    ${GREEN}Linux test passed${NC}"
+	echo -e "${CYAN}Testing Linux binary...${NC}"
+	TEST_OUTPUT=$(cd /tmp && "${BINARIES[linux]}" --test $VERBOSE 2>&1 || true)
+
+	if parse_test_output "$TEST_OUTPUT" "linux"; then
+		RESULTS[linux_test]="PASS"
+		echo -e "  ${GREEN}PASS${NC} - ${TEST_PASSED[linux]} passed, ${TEST_FAILED[linux]} failed, ${TEST_SKIPPED[linux]} skipped"
 	else
-		RESULTS[linux_test]="FAILED"
-		echo -e "    ${RED}Linux test failed${NC}"
+		RESULTS[linux_test]="FAIL"
+		echo -e "  ${RED}FAIL${NC} - ${TEST_PASSED[linux]} passed, ${TEST_FAILED[linux]} failed, ${TEST_SKIPPED[linux]} skipped"
+		# Show failures if any
+		if [[ -n "$VERBOSE" ]]; then
+			echo "$TEST_OUTPUT" | grep -E "^\[FAIL\]" || true
+		fi
 	fi
 fi
 
 # Test Windows build with Wine
-if [[ "${RESULTS[windows]}" == "OK" ]] && command -v wine &> /dev/null; then
-	echo -e "  Testing Windows binary (Wine)..."
-	TEST_OUTPUT=$(cd /tmp && wine "${BINARIES[windows]}" -test 2>&1 || true)
-	if echo "$TEST_OUTPUT" | grep -q "\[CWD\]" && echo "$TEST_OUTPUT" | grep -q "\[TEST\] Exiting"; then
-		RESULTS[windows_test]="OK"
-		echo -e "    ${GREEN}Windows/Wine test passed${NC}"
+if [[ "${RESULTS[windows]}" == "OK" ]]; then
+	if command -v wine &> /dev/null; then
+		echo -e "${CYAN}Testing Windows binary (Wine)...${NC}"
+		TEST_OUTPUT=$(cd /tmp && wine "${BINARIES[windows]}" --test $VERBOSE 2>&1 || true)
+
+		if parse_test_output "$TEST_OUTPUT" "windows"; then
+			RESULTS[windows_test]="PASS"
+			echo -e "  ${GREEN}PASS${NC} - ${TEST_PASSED[windows]} passed, ${TEST_FAILED[windows]} failed, ${TEST_SKIPPED[windows]} skipped"
+		else
+			RESULTS[windows_test]="FAIL"
+			echo -e "  ${RED}FAIL${NC} - ${TEST_PASSED[windows]} passed, ${TEST_FAILED[windows]} failed, ${TEST_SKIPPED[windows]} skipped"
+			if [[ -n "$VERBOSE" ]]; then
+				echo "$TEST_OUTPUT" | grep -E "^\[FAIL\]" || true
+			fi
+		fi
 	else
-		RESULTS[windows_test]="FAILED"
-		echo -e "    ${RED}Windows/Wine test failed${NC}"
+		RESULTS[windows_test]="SKIPPED (Wine not found)"
+		echo -e "${CYAN}Testing Windows binary...${NC}"
+		echo -e "  ${YELLOW}SKIPPED${NC} - Wine not found"
 	fi
-elif [[ "${RESULTS[windows]}" == "OK" ]]; then
-	RESULTS[windows_test]="SKIPPED (Wine not found)"
-	echo -e "    ${YELLOW}Windows test skipped (Wine not found)${NC}"
+fi
+
+# Test Android x64 build with Waydroid
+if [[ "${RESULTS[android_x64]}" == "OK" ]]; then
+	echo -e "${CYAN}Testing Android x64 binary (Waydroid)...${NC}"
+
+	# Check if Waydroid session is running, start one if not
+	WAYDROID_STARTED=false
+	if ! waydroid status 2>/dev/null | grep -q "Session.*RUNNING"; then
+		echo -e "  Starting Waydroid session..."
+		waydroid session start > /dev/null 2>&1 &
+		WAYDROID_SESSION_PID=$!
+		WAYDROID_STARTED=true
+		# Wait for session to be ready (up to 30 seconds)
+		for i in {1..30}; do
+			if waydroid status 2>/dev/null | grep -q "Session.*RUNNING"; then
+				echo -e "  Session started, waiting for container..."
+				break
+			fi
+			sleep 1
+		done
+	fi
+
+	# Check if Waydroid session is now running
+	if waydroid status 2>/dev/null | grep -q "Session.*RUNNING"; then
+		# Wait for container to be RUNNING (Android system takes time to boot)
+		CONTAINER_READY=false
+		for i in {1..60}; do
+			if waydroid status 2>/dev/null | grep -q "Container.*RUNNING"; then
+				CONTAINER_READY=true
+				break
+			fi
+			sleep 1
+		done
+
+		if [[ "$CONTAINER_READY" == true ]]; then
+			# Install the APK (waydroid app install doesn't require root)
+			echo -e "  Installing APK..."
+			INSTALL_OUTPUT=$(waydroid app install "${BINARIES[android_x64]}" 2>&1)
+			INSTALL_EXIT=$?
+
+			if [[ $INSTALL_EXIT -eq 0 ]]; then
+				# Give it a moment to register
+				sleep 2
+				# Launch the app
+				echo -e "  Launching app..."
+				waydroid app launch net.stereokit.test_window > /dev/null 2>&1 &
+				sleep 2
+				RESULTS[android_x64_test]="PASS"
+				echo -e "  ${GREEN}PASS${NC} - App installed and launched successfully"
+			else
+				RESULTS[android_x64_test]="FAIL"
+				echo -e "  ${RED}FAIL${NC} - Install failed (exit code $INSTALL_EXIT)"
+			fi
+		else
+			RESULTS[android_x64_test]="FAIL"
+			echo -e "  ${RED}FAIL${NC} - Container not ready after 60s"
+		fi
+
+		# Stop the session if we started it
+		if [[ "$WAYDROID_STARTED" == true ]]; then
+			echo -e "  Stopping Waydroid session..."
+			waydroid session stop > /dev/null 2>&1 || true
+		fi
+	else
+		RESULTS[android_x64_test]="FAIL"
+		echo -e "  ${RED}FAIL${NC} - Could not start Waydroid session"
+	fi
 fi
 
 # ============================================================================
@@ -221,7 +392,7 @@ fi
 # ============================================================================
 echo ""
 echo -e "${BLUE}================================================${NC}"
-echo -e "${BLUE}  Build Report${NC}"
+echo -e "${BLUE}  Build & Test Report${NC}"
 echo -e "${BLUE}================================================${NC}"
 echo ""
 echo -e "Build Type: ${YELLOW}${BUILD_TYPE}${NC}"
@@ -230,62 +401,117 @@ echo ""
 # Linux
 echo -e "${BLUE}Linux:${NC}"
 if [[ "${RESULTS[linux]}" == "OK" ]]; then
-	echo -e "  Status: ${GREEN}${RESULTS[linux]}${NC}"
+	echo -e "  Build:  ${GREEN}${RESULTS[linux]}${NC}"
 	echo -e "  Binary: ${BINARIES[linux]}"
 	echo -e "  Size:   $(format_size ${SIZES[linux]})"
 	if [[ -n "${RESULTS[linux_test]}" ]]; then
-		if [[ "${RESULTS[linux_test]}" == "OK" ]]; then
-			echo -e "  Test:   ${GREEN}${RESULTS[linux_test]}${NC}"
+		if [[ "${RESULTS[linux_test]}" == "PASS" ]]; then
+			echo -e "  Test:   ${GREEN}${RESULTS[linux_test]}${NC} (${TEST_PASSED[linux]} passed, ${TEST_FAILED[linux]} failed, ${TEST_SKIPPED[linux]} skipped)"
 		else
-			echo -e "  Test:   ${RED}${RESULTS[linux_test]}${NC}"
+			echo -e "  Test:   ${RED}${RESULTS[linux_test]}${NC} (${TEST_PASSED[linux]} passed, ${TEST_FAILED[linux]} failed, ${TEST_SKIPPED[linux]} skipped)"
 		fi
 	fi
 else
-	echo -e "  Status: ${RED}${RESULTS[linux]}${NC}"
+	echo -e "  Build:  ${RED}${RESULTS[linux]}${NC}"
 fi
 echo ""
 
 # Windows
 echo -e "${BLUE}Windows:${NC}"
 if [[ "${RESULTS[windows]}" == "OK" ]]; then
-	echo -e "  Status: ${GREEN}${RESULTS[windows]}${NC}"
+	echo -e "  Build:  ${GREEN}${RESULTS[windows]}${NC}"
 	echo -e "  Binary: ${BINARIES[windows]}"
 	echo -e "  Size:   $(format_size ${SIZES[windows]})"
 	if [[ -n "${RESULTS[windows_test]}" ]]; then
-		if [[ "${RESULTS[windows_test]}" == "OK" ]]; then
-			echo -e "  Test:   ${GREEN}${RESULTS[windows_test]}${NC}"
+		if [[ "${RESULTS[windows_test]}" == "PASS" ]]; then
+			echo -e "  Test:   ${GREEN}${RESULTS[windows_test]}${NC} (${TEST_PASSED[windows]} passed, ${TEST_FAILED[windows]} failed, ${TEST_SKIPPED[windows]} skipped)"
+		elif [[ "${RESULTS[windows_test]}" == *"SKIPPED"* ]]; then
+			echo -e "  Test:   ${YELLOW}${RESULTS[windows_test]}${NC}"
 		else
-			echo -e "  Test:   ${RED}${RESULTS[windows_test]}${NC}"
+			echo -e "  Test:   ${RED}${RESULTS[windows_test]}${NC} (${TEST_PASSED[windows]} passed, ${TEST_FAILED[windows]} failed, ${TEST_SKIPPED[windows]} skipped)"
 		fi
 	fi
+elif [[ "${RESULTS[windows]}" == *"SKIPPED"* ]]; then
+	echo -e "  Build:  ${YELLOW}${RESULTS[windows]}${NC}"
 else
-	echo -e "  Status: ${YELLOW}${RESULTS[windows]}${NC}"
+	echo -e "  Build:  ${RED}${RESULTS[windows]}${NC}"
 fi
 echo ""
 
-# Android
-echo -e "${BLUE}Android:${NC}"
+# Android (ARM64)
+echo -e "${BLUE}Android (ARM64):${NC}"
 if [[ "${RESULTS[android]}" == "OK" ]]; then
-	echo -e "  Status: ${GREEN}${RESULTS[android]}${NC}"
+	echo -e "  Build:  ${GREEN}${RESULTS[android]}${NC}"
 	echo -e "  Binary: ${BINARIES[android]}"
 	echo -e "  Size:   $(format_size ${SIZES[android]})"
+elif [[ "${RESULTS[android]}" == *"SKIPPED"* ]]; then
+	echo -e "  Build:  ${YELLOW}${RESULTS[android]}${NC}"
 else
-	echo -e "  Status: ${YELLOW}${RESULTS[android]}${NC}"
+	echo -e "  Build:  ${RED}${RESULTS[android]}${NC}"
 fi
 echo ""
 
+# Android (x64/Waydroid)
+echo -e "${BLUE}Android (x64/Waydroid):${NC}"
+if [[ "${RESULTS[android_x64]}" == "OK" ]]; then
+	echo -e "  Build:  ${GREEN}${RESULTS[android_x64]}${NC}"
+	echo -e "  APK:    ${BINARIES[android_x64]}"
+	echo -e "  Size:   $(format_size ${SIZES[android_x64]})"
+	if [[ -n "${RESULTS[android_x64_test]}" ]]; then
+		if [[ "${RESULTS[android_x64_test]}" == "PASS" ]]; then
+			echo -e "  Test:   ${GREEN}${RESULTS[android_x64_test]}${NC}"
+		else
+			echo -e "  Test:   ${RED}${RESULTS[android_x64_test]}${NC}"
+		fi
+	fi
+elif [[ "${RESULTS[android_x64]}" == *"SKIPPED"* ]]; then
+	echo -e "  Build:  ${YELLOW}${RESULTS[android_x64]}${NC}"
+else
+	echo -e "  Build:  ${RED}${RESULTS[android_x64]}${NC}"
+fi
+echo ""
+
+# ============================================================================
 # Summary
+# ============================================================================
 echo -e "${BLUE}================================================${NC}"
-FAILED=0
+echo -e "${BLUE}  Summary${NC}"
+echo -e "${BLUE}================================================${NC}"
+
+BUILD_FAILED=0
+TEST_FAILED_COUNT=0
 for key in "${!RESULTS[@]}"; do
-	if [[ "${RESULTS[$key]}" == *"FAILED"* ]]; then
-		((FAILED++))
+	if [[ "${RESULTS[$key]}" == *"FAILED"* ]] || [[ "${RESULTS[$key]}" == "FAIL" ]]; then
+		if [[ "$key" == *"_test" ]]; then
+			((TEST_FAILED_COUNT++))
+		else
+			((BUILD_FAILED++))
+		fi
 	fi
 done
 
-if [[ $FAILED -eq 0 ]]; then
-	echo -e "${GREEN}All builds successful!${NC}"
+# Count total tests run
+TOTAL_PASSED=0
+TOTAL_FAILED=0
+TOTAL_SKIPPED=0
+for platform in "${!TEST_PASSED[@]}"; do
+	((TOTAL_PASSED += ${TEST_PASSED[$platform]:-0}))
+	((TOTAL_FAILED += ${TEST_FAILED[$platform]:-0}))
+	((TOTAL_SKIPPED += ${TEST_SKIPPED[$platform]:-0}))
+done
+
+echo ""
+if [[ $TOTAL_PASSED -gt 0 ]] || [[ $TOTAL_FAILED -gt 0 ]]; then
+	echo -e "Test Results: ${GREEN}$TOTAL_PASSED passed${NC}, ${RED}$TOTAL_FAILED failed${NC}, ${YELLOW}$TOTAL_SKIPPED skipped${NC}"
+fi
+
+if [[ $BUILD_FAILED -eq 0 ]] && [[ $TEST_FAILED_COUNT -eq 0 ]]; then
+	echo -e "${GREEN}All builds and tests successful!${NC}"
+	exit 0
+elif [[ $BUILD_FAILED -gt 0 ]]; then
+	echo -e "${RED}$BUILD_FAILED build(s) failed${NC}"
+	exit 1
 else
-	echo -e "${RED}$FAILED build(s) failed${NC}"
+	echo -e "${RED}$TEST_FAILED_COUNT test suite(s) failed${NC}"
 	exit 1
 fi
