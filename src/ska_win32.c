@@ -17,7 +17,7 @@ wchar_t* ska_utf8_to_wide(const char* utf8) {
 	int32_t len = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, NULL, 0);
 	if (len == 0) return NULL;
 
-	wchar_t* wide = (wchar_t*)malloc(len * sizeof(wchar_t));
+	wchar_t* wide = (wchar_t*)ska_malloc(len * sizeof(wchar_t));
 	if (!wide) return NULL;
 
 	MultiByteToWideChar(CP_UTF8, 0, utf8, -1, wide, len);
@@ -30,7 +30,7 @@ char* ska_wide_to_utf8(const wchar_t* wide) {
 	int32_t len = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
 	if (len == 0) return NULL;
 
-	char* utf8 = (char*)malloc(len);
+	char* utf8 = (char*)ska_malloc(len);
 	if (!utf8) return NULL;
 
 	WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8, len, NULL, NULL);
@@ -38,7 +38,7 @@ char* ska_wide_to_utf8(const wchar_t* wide) {
 }
 
 void ska_free_string(void* str) {
-	free(str);
+	ska_free(str);
 }
 
 static void ska_init_scancode_table(void) {
@@ -619,7 +619,7 @@ bool ska_platform_window_create(
 	}
 
 	// Store title
-	window->title = strdup(title);
+	window->title = ska_strdup(title);
 
 	// Initialize DPI scale (before WM_DPICHANGED can fire)
 	window->dpi_scale = ska_platform_get_dpi_scale(window);
@@ -665,9 +665,9 @@ void ska_platform_window_set_title(ska_window_t* window, const char* title) {
 	}
 
 	if (window->title) {
-		free(window->title);
+		ska_free(window->title);
 	}
-	window->title = strdup(title);
+	window->title = ska_strdup(title);
 }
 
 void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_left, int32_t* out_right, int32_t* out_top, int32_t* out_bottom) {
@@ -1053,11 +1053,11 @@ bool ska_platform_clipboard_set_text(const char* text) {
 // Helper to convert space-separated extensions to semicolon-separated for Windows
 // e.g. "*.png *.jpg *.gif" -> "*.png;*.jpg;*.gif"
 static char* ska_win32_exts_to_pattern(const char* exts) {
-	if (!exts || !exts[0]) return strdup("*.*");
+	if (!exts || !exts[0]) return ska_strdup("*.*");
 
 	size_t len = strlen(exts);
-	char* pattern = (char*)malloc(len + 1);
-	if (!pattern) return strdup("*.*");
+	char* pattern = (char*)ska_malloc(len + 1);
+	if (!pattern) return ska_strdup("*.*");
 
 	const char* src = exts;
 	char* dst = pattern;
@@ -1171,9 +1171,9 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 	g_win32_file_dialog.result_buffer[0] = L'\0';
 
 	// Convert strings to wide
-	if (g_win32_file_dialog.title) { free(g_win32_file_dialog.title); g_win32_file_dialog.title = NULL; }
-	if (g_win32_file_dialog.default_name) { free(g_win32_file_dialog.default_name); g_win32_file_dialog.default_name = NULL; }
-	if (g_win32_file_dialog.filter) { free(g_win32_file_dialog.filter); g_win32_file_dialog.filter = NULL; }
+	if (g_win32_file_dialog.title) { ska_free(g_win32_file_dialog.title); g_win32_file_dialog.title = NULL; }
+	if (g_win32_file_dialog.default_name) { ska_free(g_win32_file_dialog.default_name); g_win32_file_dialog.default_name = NULL; }
+	if (g_win32_file_dialog.filter) { ska_free(g_win32_file_dialog.filter); g_win32_file_dialog.filter = NULL; }
 
 	if (request->title) {
 		g_win32_file_dialog.title = ska_utf8_to_wide(request->title);
@@ -1192,7 +1192,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 			total_len += strlen(exts) + 1;
 		}
 
-		wchar_t* filter = (wchar_t*)malloc(total_len * sizeof(wchar_t));
+		wchar_t* filter = (wchar_t*)ska_malloc(total_len * sizeof(wchar_t));
 		if (filter) {
 			wchar_t* p = filter;
 			for (int32_t i = 0; i < request->filter_count; i++) {
@@ -1201,7 +1201,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 				const char* exts = ska_filter_get_exts(&request->filters[i]);
 				char* win_pattern = ska_win32_exts_to_pattern(exts);
 				wchar_t* pattern = ska_utf8_to_wide(win_pattern);
-				free(win_pattern);
+				ska_free(win_pattern);
 
 				if (name && pattern) {
 					wcscpy(p, name);
@@ -1209,8 +1209,8 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 					wcscpy(p, pattern);
 					p += wcslen(pattern) + 1;
 				}
-				if (name) free(name);
-				if (pattern) free(pattern);
+				if (name) ska_free(name);
+				if (pattern) ska_free(pattern);
 			}
 			*p = L'\0';
 			g_win32_file_dialog.filter = filter;
@@ -1243,7 +1243,7 @@ static void ska_win32_check_file_dialog(void) {
 	// Create result
 	char* title_utf8 = g_win32_file_dialog.title ? ska_wide_to_utf8(g_win32_file_dialog.title) : NULL;
 	ska_file_dialog_result_t* result = ska_file_dialog_result_alloc(g_win32_file_dialog.id, title_utf8);
-	if (title_utf8) free(title_utf8);
+	if (title_utf8) ska_free(title_utf8);
 
 	if (!g_win32_file_dialog.cancelled && g_win32_file_dialog.result_buffer[0]) {
 		// Parse result buffer
@@ -1258,7 +1258,7 @@ static void ska_win32_check_file_dialog(void) {
 			char* path = ska_wide_to_utf8(first);
 			if (path) {
 				ska_file_dialog_result_add_path(result, path);
-				free(path);
+				ska_free(path);
 			}
 		} else {
 			// Multiple files - first entry is directory
@@ -1277,7 +1277,7 @@ static void ska_win32_check_file_dialog(void) {
 				char* path = ska_wide_to_utf8(full_path);
 				if (path) {
 					ska_file_dialog_result_add_path(result, path);
-					free(path);
+					ska_free(path);
 				}
 
 				p += wcslen(p) + 1;
@@ -1286,9 +1286,9 @@ static void ska_win32_check_file_dialog(void) {
 	}
 
 	// Cleanup
-	if (g_win32_file_dialog.title) { free(g_win32_file_dialog.title); g_win32_file_dialog.title = NULL; }
-	if (g_win32_file_dialog.default_name) { free(g_win32_file_dialog.default_name); g_win32_file_dialog.default_name = NULL; }
-	if (g_win32_file_dialog.filter) { free(g_win32_file_dialog.filter); g_win32_file_dialog.filter = NULL; }
+	if (g_win32_file_dialog.title) { ska_free(g_win32_file_dialog.title); g_win32_file_dialog.title = NULL; }
+	if (g_win32_file_dialog.default_name) { ska_free(g_win32_file_dialog.default_name); g_win32_file_dialog.default_name = NULL; }
+	if (g_win32_file_dialog.filter) { ska_free(g_win32_file_dialog.filter); g_win32_file_dialog.filter = NULL; }
 	g_win32_file_dialog.active = false;
 
 	// Post result

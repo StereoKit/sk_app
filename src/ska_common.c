@@ -34,6 +34,61 @@ ska_state_t g_ska = {0};
 static char* g_kvpstore_app_name = NULL;
 
 // ============================================================================
+// Memory Allocation
+// ============================================================================
+
+// Default allocators using stdlib
+static void* ska_default_alloc(size_t size, void* user_data) {
+	(void)user_data;
+	return malloc(size);
+}
+
+static void* ska_default_realloc(void* ptr, size_t size, void* user_data) {
+	(void)user_data;
+	return realloc(ptr, size);
+}
+
+static void ska_default_free(void* ptr, void* user_data) {
+	(void)user_data;
+	free(ptr);
+}
+
+// Global allocator state - initialized to defaults
+ska_allocator_t g_ska_allocator = {
+	.alloc     = ska_default_alloc,
+	.realloc   = ska_default_realloc,
+	.free      = ska_default_free,
+	.user_data = NULL
+};
+
+void* ska_malloc(size_t size) {
+	return g_ska_allocator.alloc(size, g_ska_allocator.user_data);
+}
+
+void* ska_calloc(size_t count, size_t size) {
+	size_t total = count * size;
+	void* ptr = g_ska_allocator.alloc(total, g_ska_allocator.user_data);
+	if (ptr) memset(ptr, 0, total);
+	return ptr;
+}
+
+void* ska_realloc(void* ptr, size_t size) {
+	return g_ska_allocator.realloc(ptr, size, g_ska_allocator.user_data);
+}
+
+void ska_free(void* ptr) {
+	if (ptr) g_ska_allocator.free(ptr, g_ska_allocator.user_data);
+}
+
+char* ska_strdup(const char* str) {
+	if (!str) return NULL;
+	size_t len = strlen(str) + 1;
+	char* copy = (char*)ska_malloc(len);
+	if (copy) memcpy(copy, str, len);
+	return copy;
+}
+
+// ============================================================================
 // Error Handling
 // ============================================================================
 
@@ -55,11 +110,11 @@ SKA_API const char* ska_error_get(void) {
 
 SKA_API void ska_kvpstore_set_app_name(const char* app_name) {
 	if (g_kvpstore_app_name) {
-		free(g_kvpstore_app_name);
+		ska_free(g_kvpstore_app_name);
 		g_kvpstore_app_name = NULL;
 	}
 	if (app_name && app_name[0] != '\0') {
-		g_kvpstore_app_name = strdup(app_name);
+		g_kvpstore_app_name = ska_strdup(app_name);
 	}
 }
 
@@ -98,10 +153,39 @@ bool ska_kvpstore_validate_key(const char* key) {
 // Initialization
 // ============================================================================
 
-SKA_API bool ska_init(void) {
+SKA_API bool ska_init(const ska_settings_t* opt_settings) {
 	if (g_ska.initialized) {
 		ska_set_error("sk_app already initialized");
 		return false;
+	}
+
+	// Set up allocators first (before any allocations)
+	if (opt_settings) {
+		bool has_alloc   = opt_settings->alloc   != NULL;
+		bool has_realloc = opt_settings->realloc != NULL;
+		bool has_free    = opt_settings->free    != NULL;
+
+		// If any allocator is provided, all must be provided
+		if (has_alloc || has_realloc || has_free) {
+			if (!has_alloc || !has_realloc || !has_free) {
+				ska_set_error("ska_init: if any allocator function is provided, all must be provided (alloc, realloc, free)");
+				return false;
+			}
+			g_ska_allocator.alloc     = opt_settings->alloc;
+			g_ska_allocator.realloc   = opt_settings->realloc;
+			g_ska_allocator.free      = opt_settings->free;
+			g_ska_allocator.user_data = opt_settings->alloc_user_data;
+		} else {
+			g_ska_allocator.alloc     = ska_default_alloc;
+			g_ska_allocator.realloc   = ska_default_realloc;
+			g_ska_allocator.free      = ska_default_free;
+			g_ska_allocator.user_data = NULL;
+		}
+	} else {
+		g_ska_allocator.alloc     = ska_default_alloc;
+		g_ska_allocator.realloc   = ska_default_realloc;
+		g_ska_allocator.free      = ska_default_free;
+		g_ska_allocator.user_data = NULL;
 	}
 
 #ifdef SKA_PLATFORM_ANDROID
@@ -149,7 +233,7 @@ SKA_API void ska_shutdown(void) {
 
 	// Cleanup KVP store
 	if (g_kvpstore_app_name) {
-		free(g_kvpstore_app_name);
+		ska_free(g_kvpstore_app_name);
 		g_kvpstore_app_name = NULL;
 	}
 
@@ -167,7 +251,7 @@ ska_window_t* ska_window_alloc(void) {
 		return NULL;
 	}
 
-	ska_window_t* window = (ska_window_t*)calloc(1, sizeof(ska_window_t));
+	ska_window_t* window = (ska_window_t*)ska_calloc(1, sizeof(ska_window_t));
 	if (!window) {
 		ska_set_error("Failed to allocate window structure");
 		return NULL;
@@ -185,7 +269,7 @@ ska_window_t* ska_window_alloc(void) {
 		}
 	}
 
-	free(window);
+	ska_free(window);
 	ska_set_error("Internal error: no free window slot");
 	return NULL;
 }
@@ -203,10 +287,10 @@ void ska_window_free(ska_window_t* ref_window) {
 	}
 
 	if (ref_window->title) {
-		free(ref_window->title);
+		ska_free(ref_window->title);
 	}
 
-	free(ref_window);
+	ska_free(ref_window);
 }
 
 SKA_API ska_window_t* ska_window_create(
@@ -730,12 +814,12 @@ ska_file_dialog_result_t* ska_file_dialog_result_alloc(ska_file_dialog_id_t id, 
 		// Free all old results
 		for (int32_t i = 0; i < g_ska_file_dialog.result_count; i++) {
 			ska_file_dialog_result_t* r = &g_ska_file_dialog.results[i];
-			if (r->title) free(r->title);
+			if (r->title) ska_free(r->title);
 			if (r->paths) {
 				for (int32_t j = 0; j < r->path_count; j++) {
-					if (r->paths[j]) free(r->paths[j]);
+					if (r->paths[j]) ska_free(r->paths[j]);
 				}
-				free(r->paths);
+				ska_free(r->paths);
 			}
 		}
 		g_ska_file_dialog.result_count = 0;
@@ -744,7 +828,7 @@ ska_file_dialog_result_t* ska_file_dialog_result_alloc(ska_file_dialog_id_t id, 
 	ska_file_dialog_result_t* result = &g_ska_file_dialog.results[g_ska_file_dialog.result_count++];
 	memset(result, 0, sizeof(*result));
 	result->id = id;
-	result->title = title ? strdup(title) : NULL;
+	result->title = title ? ska_strdup(title) : NULL;
 	result->paths = NULL;
 	result->path_count = 0;
 	result->cancelled = false;
@@ -763,11 +847,11 @@ void ska_file_dialog_result_add_path(ska_file_dialog_result_t* result, const cha
 
 	// Allocate or grow paths array
 	if (!result->paths) {
-		result->paths = (char**)calloc(SKA_MAX_DIALOG_PATHS, sizeof(char*));
+		result->paths = (char**)ska_calloc(SKA_MAX_DIALOG_PATHS, sizeof(char*));
 		if (!result->paths) return;
 	}
 
-	result->paths[result->path_count++] = strdup(path);
+	result->paths[result->path_count++] = ska_strdup(path);
 }
 
 void ska_file_dialog_result_complete(ska_file_dialog_result_t* result, bool cancelled) {
@@ -839,15 +923,15 @@ SKA_API void ska_file_dialog_free_result(ska_event_file_dialog_t* ref_result) {
 	// Free paths
 	if (internal->paths) {
 		for (int32_t i = 0; i < internal->path_count; i++) {
-			if (internal->paths[i]) free(internal->paths[i]);
+			if (internal->paths[i]) ska_free(internal->paths[i]);
 		}
-		free(internal->paths);
+		ska_free(internal->paths);
 		internal->paths = NULL;
 	}
 
 	// Free title
 	if (internal->title) {
-		free(internal->title);
+		ska_free(internal->title);
 		internal->title = NULL;
 	}
 

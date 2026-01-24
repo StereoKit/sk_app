@@ -248,7 +248,7 @@ bool ska_platform_window_create(
 	}
 
 	// Store title
-	window->title = strdup(title);
+	window->title = ska_strdup(title);
 
 	// Apply window flags
 	if (flags & ska_window_borderless) {
@@ -316,9 +316,9 @@ void ska_platform_window_destroy(ska_window_t* window) {
 
 void ska_platform_window_set_title(ska_window_t* window, const char* title) {
 	if (window->title) {
-		free(window->title);
+		ska_free(window->title);
 	}
-	window->title = strdup(title);
+	window->title = ska_strdup(title);
 	XStoreName(g_ska.x_display, window->xwindow, title);
 	XSetIconName(g_ska.x_display, window->xwindow, title);
 	XFlush(g_ska.x_display);
@@ -1080,7 +1080,7 @@ char* ska_platform_clipboard_get_text(void) {
 			return NULL;
 		}
 
-		char* text = (char*)malloc(nitems + 1);
+		char* text = (char*)ska_malloc(nitems + 1);
 		if (text) {
 			memcpy(text, data, nitems);
 			text[nitems] = '\0';
@@ -1130,7 +1130,7 @@ char* ska_platform_clipboard_get_text(void) {
 		return NULL;
 	}
 
-	char* text = (char*)malloc(nitems + 1);
+	char* text = (char*)ska_malloc(nitems + 1);
 	if (text) {
 		memcpy(text, data, nitems);
 		text[nitems] = '\0';
@@ -1360,7 +1360,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 	g_linux_file_dialog.pid = pid;
 	g_linux_file_dialog.pipe_fd = pipefd[0];
 	g_linux_file_dialog.id = id;
-	g_linux_file_dialog.title = request->title ? strdup(request->title) : NULL;
+	g_linux_file_dialog.title = request->title ? ska_strdup(request->title) : NULL;
 	g_linux_file_dialog.active = true;
 
 	return true;
@@ -1425,7 +1425,7 @@ static void ska_linux_check_file_dialog(void) {
 	// Cleanup
 	close(g_linux_file_dialog.pipe_fd);
 	if (g_linux_file_dialog.title) {
-		free(g_linux_file_dialog.title);
+		ska_free(g_linux_file_dialog.title);
 	}
 	g_linux_file_dialog.active = false;
 
@@ -1451,7 +1451,7 @@ bool ska_platform_window_set_icon(ska_window_t* ref_window, const uint8_t* pixel
 	size_t pixel_count = (size_t)width * (size_t)height;
 	size_t data_size = 2 + pixel_count; // width + height + pixels
 
-	unsigned long* icon_data = (unsigned long*)malloc(data_size * sizeof(unsigned long));
+	unsigned long* icon_data = (unsigned long*)ska_malloc(data_size * sizeof(unsigned long));
 	if (!icon_data) {
 		ska_set_error("ska_platform_window_set_icon: failed to allocate icon data");
 		return false;
@@ -1486,7 +1486,7 @@ bool ska_platform_window_set_icon(ska_window_t* ref_window, const uint8_t* pixel
 
 	XFlush(g_ska.x_display);
 
-	free(icon_data);
+	ska_free(icon_data);
 	return true;
 }
 

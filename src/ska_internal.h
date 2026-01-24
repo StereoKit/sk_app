@@ -12,6 +12,27 @@
 #include <stdarg.h>
 #include <time.h>
 
+// ============================================================================
+// Memory Allocation
+// ============================================================================
+
+// Internal allocator state
+typedef struct ska_allocator_t {
+	ska_alloc_fn   alloc;
+	ska_realloc_fn realloc;
+	ska_free_fn    free;
+	void*          user_data;
+} ska_allocator_t;
+
+extern ska_allocator_t g_ska_allocator;
+
+// Internal wrapper functions - use these instead of malloc/calloc/realloc/free
+void* ska_malloc(size_t size);
+void* ska_calloc(size_t count, size_t size);
+void* ska_realloc(void* ptr, size_t size);
+void  ska_free(void* ptr);
+char* ska_strdup(const char* str);
+
 // POSIX includes for Linux/macOS
 #if defined(SKA_PLATFORM_LINUX) || defined(SKA_PLATFORM_MACOS)
 	#include <unistd.h>

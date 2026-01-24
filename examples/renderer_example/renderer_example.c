@@ -162,7 +162,7 @@ int32_t main(int32_t argc, char** argv) {
 	skr_render_list_t render_list   = {0};
 
 	// Initialize sk_app
-	if (!ska_init()) {
+	if (!ska_init(NULL)) {
 		fprintf(stderr, "Failed to initialize sk_app: %s\n", ska_error_get());
 		return 1;  // Can't goto cleanup - ska not initialized
 	}

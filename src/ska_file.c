@@ -61,7 +61,7 @@ SKA_API bool ska_file_read(const char* filename, void** out_data, size_t* out_si
 	}
 
 	// Allocate buffer
-	void* data = malloc((size_t)file_size);
+	void* data = ska_malloc((size_t)file_size);
 	if (!data) {
 		ska_set_error("ska_file_read: Failed to allocate %ld bytes", file_size);
 		fclose(file);
@@ -74,7 +74,7 @@ SKA_API bool ska_file_read(const char* filename, void** out_data, size_t* out_si
 
 	if (bytes_read != (size_t)file_size) {
 		ska_set_error("ska_file_read: Read %zu bytes, expected %ld", bytes_read, file_size);
-		free(data);
+		ska_free(data);
 		return false;
 	}
 
@@ -104,10 +104,10 @@ SKA_API bool ska_file_read_text(const char* filename, char** out_text) {
 	}
 
 	// Allocate +1 for null terminator
-	char* text = (char*)realloc(data, file_size + 1);
+	char* text = (char*)ska_realloc(data, file_size + 1);
 	if (!text) {
 		ska_set_error("ska_file_read_text: Failed to allocate null terminator");
-		free(data);
+		ska_free(data);
 		return false;
 	}
 
@@ -158,7 +158,7 @@ SKA_API bool ska_file_write_text(const char* filename, const char* text) {
 }
 
 SKA_API void ska_file_free_data(void* data) {
-	free(data);
+	ska_free(data);
 }
 
 SKA_API bool ska_file_exists(const char* filename) {
@@ -214,7 +214,7 @@ SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterat
 #ifdef SKA_PLATFORM_WIN32
 	// Windows: use FindFirstFile/FindNextFile
 	size_t path_len    = strlen(path);
-	char*  search_path = (char*)malloc(path_len + 3);  // path + "\\*" + null
+	char*  search_path = (char*)ska_malloc(path_len + 3);  // path + "\\*" + null
 	if (!search_path) {
 		ska_set_error("ska_dir_iterate: Failed to allocate memory");
 		return false;
@@ -233,7 +233,7 @@ SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterat
 
 	WIN32_FIND_DATAA find_data;
 	HANDLE           find_handle = FindFirstFileA(search_path, &find_data);
-	free(search_path);
+	ska_free(search_path);
 
 	if (find_handle == INVALID_HANDLE_VALUE) {
 		DWORD err = GetLastError();
@@ -277,7 +277,7 @@ SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterat
 	// Pre-allocate buffer for full paths (reused across iterations)
 	size_t path_len = strlen(path);
 	size_t buffer_size = path_len + 1 + 256 + 1;  // path + '/' + NAME_MAX + null
-	char*  full_path = (char*)malloc(buffer_size);
+	char*  full_path = (char*)ska_malloc(buffer_size);
 	if (!full_path) {
 		closedir(dir);
 		ska_set_error("ska_dir_iterate: Failed to allocate memory");
@@ -316,7 +316,7 @@ SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterat
 			// Reallocate if name is longer than expected
 			if (path_len + 1 + name_len + 1 > buffer_size) {
 				buffer_size = path_len + 1 + name_len + 1;
-				char* new_buffer = (char*)realloc(full_path, buffer_size);
+				char* new_buffer = (char*)ska_realloc(full_path, buffer_size);
 				if (!new_buffer) continue;
 				full_path = new_buffer;
 			}
@@ -332,13 +332,13 @@ SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterat
 		}
 
 		if (!callback(opt_context, &dir_entry)) {
-			free(full_path);
+			ska_free(full_path);
 			closedir(dir);
 			return true;  // Callback requested stop, not an error
 		}
 	}
 
-	free(full_path);
+	ska_free(full_path);
 	closedir(dir);
 	return true;
 #endif
@@ -489,7 +489,7 @@ SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out
 
 	// Build path: try "assets/" first, then "Assets/"
 	size_t name_len = strlen(asset_name);
-	char* path = (char*)malloc(8 + name_len + 1);  // "assets/" or "Assets/" + name + null
+	char* path = (char*)ska_malloc(8 + name_len + 1);  // "assets/" or "Assets/" + name + null
 	if (!path) {
 		ska_set_error("ska_asset_read: Failed to allocate path buffer");
 		return false;
@@ -499,7 +499,7 @@ SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out
 	snprintf(path, 8 + name_len + 1, "assets/%s", asset_name);
 	if (ska_file_exists(path)) {
 		bool result = ska_file_read(path, out_data, out_size);
-		free(path);
+		ska_free(path);
 		return result;
 	}
 
@@ -507,12 +507,12 @@ SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out
 	snprintf(path, 8 + name_len + 1, "Assets/%s", asset_name);
 	if (ska_file_exists(path)) {
 		bool result = ska_file_read(path, out_data, out_size);
-		free(path);
+		ska_free(path);
 		return result;
 	}
 
 	ska_set_error("ska_asset_read: Asset '%s' not found in assets/ or Assets/", asset_name);
-	free(path);
+	ska_free(path);
 	return false;
 }
 
@@ -534,10 +534,10 @@ SKA_API bool ska_asset_read_text(const char* asset_name, char** out_text) {
 	}
 
 	// Allocate +1 for null terminator
-	char* text = (char*)realloc(data, file_size + 1);
+	char* text = (char*)ska_realloc(data, file_size + 1);
 	if (!text) {
 		ska_set_error("ska_asset_read_text: Failed to allocate null terminator");
-		free(data);
+		ska_free(data);
 		return false;
 	}
 

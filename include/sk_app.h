@@ -58,6 +58,24 @@ typedef struct ska_window_t ska_window_t;
 typedef        uint32_t     ska_window_id_t;
 
 // ============================================================================
+// Memory Allocators
+// ============================================================================
+
+// Custom memory allocator function signatures.
+// If provided, all sk_app memory operations will use these functions.
+typedef void* (*ska_alloc_fn)(size_t size, void* user_data);
+typedef void* (*ska_realloc_fn)(void* ptr, size_t size, void* user_data);
+typedef void  (*ska_free_fn)(void* ptr, void* user_data);
+
+// Settings for ska_init
+typedef struct ska_settings_t {
+	ska_alloc_fn   alloc;            // Custom allocator (NULL for default malloc)
+	ska_realloc_fn realloc;          // Custom reallocator (NULL for default realloc)
+	ska_free_fn    free;             // Custom free (NULL for default free)
+	void*          alloc_user_data;  // User data passed to all allocator calls
+} ska_settings_t;
+
+// ============================================================================
 // Initialization
 // ============================================================================
 
@@ -66,8 +84,9 @@ typedef        uint32_t     ska_window_id_t;
 // Can be called multiple times safely (returns error if already initialized).
 // On Android, preserves the android_app pointer set by ska_android_set_app().
 //
+// @param opt_settings Optional settings for custom allocators, etc. Pass NULL for defaults.
 // @return true on success, false on failure (check ska_error_get())
-SKA_API bool ska_init(void);
+SKA_API bool ska_init(const ska_settings_t* opt_settings);
 
 // Shutdown the sk_app library.
 // Automatically destroys any remaining windows, then cleans up platform resources.

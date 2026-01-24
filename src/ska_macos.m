@@ -352,7 +352,7 @@ bool ska_platform_window_create(
 		/* Set title */
 		NSString* ns_title = [NSString stringWithUTF8String:title];
 		[nswindow setTitle:ns_title];
-		window->title = strdup(title);
+		window->title = ska_strdup(title);
 
 		/* Create and set delegate */
 		SKAWindowDelegate* delegate = [[SKAWindowDelegate alloc] init];
@@ -417,9 +417,9 @@ void ska_platform_window_set_title(ska_window_t* window, const char* title) {
 		[nswindow setTitle:ns_title];
 
 		if (window->title) {
-			free(window->title);
+			ska_free(window->title);
 		}
-		window->title = strdup(title);
+		window->title = ska_strdup(title);
 	}
 }
 
@@ -921,7 +921,7 @@ char* ska_platform_clipboard_get_text(void) {
 		}
 
 		size_t len = strlen(utf8_text);
-		char* result = (char*)malloc(len + 1);
+		char* result = (char*)ska_malloc(len + 1);
 		if (result) {
 			memcpy(result, utf8_text, len + 1);
 		}
@@ -984,7 +984,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 
 	@autoreleasepool {
 		g_macos_file_dialog.id = id;
-		g_macos_file_dialog.title = request->title ? strdup(request->title) : NULL;
+		g_macos_file_dialog.title = request->title ? ska_strdup(request->title) : NULL;
 		g_macos_file_dialog.active = true;
 		g_macos_file_dialog.completed = false;
 		g_macos_file_dialog.cancelled = false;
@@ -1007,7 +1007,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 				for (int32_t i = 0; i < request->filter_count; i++) {
 					/* Get extensions (space-separated) */
 					const char* exts = ska_filter_get_exts(&request->filters[i]);
-					char* extsCopy = strdup(exts);
+					char* extsCopy = ska_strdup(exts);
 					char* token = strtok(extsCopy, " ");
 					while (token) {
 						/* Remove "*."; keep the extension */
@@ -1025,7 +1025,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 						}
 						token = strtok(NULL, " ");
 					}
-					free(extsCopy);
+					ska_free(extsCopy);
 				}
 				if ([types count] > 0) {
 					[panel setAllowedContentTypes:types];
@@ -1035,8 +1035,8 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 			[panel beginWithCompletionHandler:^(NSModalResponse result) {
 				if (result == NSModalResponseOK) {
 					NSURL* url = [panel URL];
-					g_macos_file_dialog.paths = (char**)malloc(sizeof(char*));
-					g_macos_file_dialog.paths[0] = strdup([[url path] UTF8String]);
+					g_macos_file_dialog.paths = (char**)ska_malloc(sizeof(char*));
+					g_macos_file_dialog.paths[0] = ska_strdup([[url path] UTF8String]);
 					g_macos_file_dialog.path_count = 1;
 					g_macos_file_dialog.cancelled = false;
 				} else {
@@ -1066,7 +1066,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 					for (int32_t i = 0; i < request->filter_count; i++) {
 						/* Get extensions (space-separated) */
 						const char* exts = ska_filter_get_exts(&request->filters[i]);
-						char* extsCopy = strdup(exts);
+						char* extsCopy = ska_strdup(exts);
 						char* token = strtok(extsCopy, " ");
 						while (token) {
 							const char* ext = token;
@@ -1083,7 +1083,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 							}
 							token = strtok(NULL, " ");
 						}
-						free(extsCopy);
+						ska_free(extsCopy);
 					}
 					if ([types count] > 0) {
 						[panel setAllowedContentTypes:types];
@@ -1095,9 +1095,9 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 				if (result == NSModalResponseOK) {
 					NSArray<NSURL*>* urls = [panel URLs];
 					g_macos_file_dialog.path_count = (int32_t)[urls count];
-					g_macos_file_dialog.paths = (char**)malloc(g_macos_file_dialog.path_count * sizeof(char*));
+					g_macos_file_dialog.paths = (char**)ska_malloc(g_macos_file_dialog.path_count * sizeof(char*));
 					for (int32_t i = 0; i < g_macos_file_dialog.path_count; i++) {
-						g_macos_file_dialog.paths[i] = strdup([[[urls objectAtIndex:i] path] UTF8String]);
+						g_macos_file_dialog.paths[i] = ska_strdup([[[urls objectAtIndex:i] path] UTF8String]);
 					}
 					g_macos_file_dialog.cancelled = false;
 				} else {
@@ -1125,15 +1125,15 @@ static void ska_macos_check_file_dialog(void) {
 	if (!g_macos_file_dialog.cancelled && g_macos_file_dialog.paths) {
 		for (int32_t i = 0; i < g_macos_file_dialog.path_count; i++) {
 			ska_file_dialog_result_add_path(result, g_macos_file_dialog.paths[i]);
-			free(g_macos_file_dialog.paths[i]);
+			ska_free(g_macos_file_dialog.paths[i]);
 		}
-		free(g_macos_file_dialog.paths);
+		ska_free(g_macos_file_dialog.paths);
 		g_macos_file_dialog.paths = NULL;
 	}
 
 	/* Cleanup */
 	if (g_macos_file_dialog.title) {
-		free(g_macos_file_dialog.title);
+		ska_free(g_macos_file_dialog.title);
 		g_macos_file_dialog.title = NULL;
 	}
 	g_macos_file_dialog.active = false;

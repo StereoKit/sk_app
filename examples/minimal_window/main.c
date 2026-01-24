@@ -10,7 +10,7 @@ int32_t main(int32_t argc, char** argv) {
 	(void)argv;
 
 	// Initialize sk_app
-	if (!ska_init()) {
+	if (!ska_init(NULL)) {
 		ska_log(ska_log_error, "Failed to initialize: %s", ska_error_get());
 		return 1;
 	}

@@ -692,7 +692,7 @@ bool ska_platform_window_create(
 	// On Android, we don't create windows - the system provides one
 	// We'll use the ANativeWindow when it becomes available
 
-	window->title = strdup(title ? title : "sk_app");
+	window->title = ska_strdup(title ? title : "sk_app");
 
 	// Window dimensions will be set when we get APP_CMD_INIT_WINDOW
 	window->native_window = NULL;
@@ -726,9 +726,9 @@ void ska_platform_window_destroy(ska_window_t* window) {
 void ska_platform_window_set_title(ska_window_t* window, const char* title) {
 	// Android doesn't support changing window title at runtime
 	if (window->title) {
-		free(window->title);
+		ska_free(window->title);
 	}
-	window->title = strdup(title);
+	window->title = ska_strdup(title);
 }
 
 void ska_platform_window_set_frame_position(ska_window_t* window, int32_t x, int32_t y) {
@@ -1249,7 +1249,7 @@ char* ska_platform_clipboard_get_text(void) {
 
 	// Allocate and copy the text
 	size_t len = strlen(utf8_text);
-	char* result = (char*)malloc(len + 1);
+	char* result = (char*)ska_malloc(len + 1);
 	if (result) {
 		memcpy(result, utf8_text, len + 1);
 	}
@@ -1394,7 +1394,7 @@ SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out
 		return false;
 	}
 
-	void* data = malloc((size_t)asset_length);
+	void* data = ska_malloc((size_t)asset_length);
 	if (!data) {
 		ska_set_error("ska_asset_read: Failed to allocate %ld bytes", (long)asset_length);
 		AAsset_close(asset);
@@ -1406,7 +1406,7 @@ SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out
 
 	if (bytes_read != asset_length) {
 		ska_set_error("ska_asset_read: Read %d bytes, expected %ld", bytes_read, (long)asset_length);
-		free(data);
+		ska_free(data);
 		return false;
 	}
 
@@ -1436,10 +1436,10 @@ SKA_API bool ska_asset_read_text(const char* asset_name, char** out_text) {
 	}
 
 	// Allocate +1 for null terminator
-	char* text = (char*)realloc(data, file_size + 1);
+	char* text = (char*)ska_realloc(data, file_size + 1);
 	if (!text) {
 		ska_set_error("ska_asset_read_text: Failed to allocate null terminator");
-		free(data);
+		ska_free(data);
 		return false;
 	}
 
@@ -1657,7 +1657,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 
 	// Store state
 	g_android_file_dialog.id = id;
-	g_android_file_dialog.title = request->title ? strdup(request->title) : NULL;
+	g_android_file_dialog.title = request->title ? ska_strdup(request->title) : NULL;
 	g_android_file_dialog.active = true;
 
 	// Launch the activity with result
@@ -1674,7 +1674,7 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 		(*env)->ExceptionClear(env);
 		g_android_file_dialog.active = false;
 		if (g_android_file_dialog.title) {
-			free(g_android_file_dialog.title);
+			ska_free(g_android_file_dialog.title);
 			g_android_file_dialog.title = NULL;
 		}
 		ska_set_error("Failed to start file picker activity");
@@ -1751,7 +1751,7 @@ Java_net_stereokit_sk_1app_SkAppActivity_nativeOnFileDialogResult(
 	// Clear pending state
 	g_android_file_dialog.active = false;
 	if (g_android_file_dialog.title) {
-		free(g_android_file_dialog.title);
+		ska_free(g_android_file_dialog.title);
 		g_android_file_dialog.title = NULL;
 	}
 

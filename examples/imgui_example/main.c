@@ -31,7 +31,7 @@ int32_t main(int argc, char** argv) {
 	printf("==========================================\n\n");
 
 	// Initialize sk_app
-	if (!ska_init()) {
+	if (!ska_init(NULL)) {
 		fprintf(stderr, "Failed to initialize sk_app: %s\n", ska_error_get());
 		return 1;
 	}

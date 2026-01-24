@@ -880,7 +880,7 @@ int32_t main(int32_t argc, char** argv) {
 
 	// Initialize
 	ska_log(ska_log_info, "\n=== Initialization ===");
-	if (!ska_init()) {
+	if (!ska_init(NULL)) {
 		ska_log(ska_log_error, "Failed to initialize sk_app: %s", ska_error_get());
 		TEST_FAIL("ska_init", ska_error_get());
 		goto print_summary;
