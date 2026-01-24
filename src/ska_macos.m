@@ -1142,4 +1142,75 @@ static void ska_macos_check_file_dialog(void) {
 	ska_file_dialog_result_complete(result, g_macos_file_dialog.cancelled);
 }
 
+/* ============================================================================
+   KVP Store (macOS: NSUserDefaults with NSData)
+   ============================================================================ */
+
+SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!data && size > 0) {
+		ska_set_error("ska_kvpstore_save: NULL data with non-zero size");
+		return false;
+	}
+
+	@autoreleasepool {
+		/* Build namespaced key: <app_name>.<key> */
+		NSString* full_key = [NSString stringWithFormat:@"%s.%s",
+			ska_kvpstore_get_app_name(), key];
+
+		/* Wrap data in NSData */
+		NSData* ns_data = [NSData dataWithBytes:data length:size];
+
+		/* Store in NSUserDefaults */
+		[[NSUserDefaults standardUserDefaults] setObject:ns_data forKey:full_key];
+		[[NSUserDefaults standardUserDefaults] synchronize];
+	}
+
+	return true;
+}
+
+SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+
+	@autoreleasepool {
+		NSString* full_key = [NSString stringWithFormat:@"%s.%s",
+			ska_kvpstore_get_app_name(), key];
+
+		NSData* ns_data = [[NSUserDefaults standardUserDefaults] dataForKey:full_key];
+
+		if (!ns_data) {
+			ska_set_error("ska_kvpstore_load: key '%s' not found", key);
+			return false;
+		}
+
+		size_t data_size = [ns_data length];
+
+		if (opt_out_size) {
+			*opt_out_size = data_size;
+		}
+
+		/* Copy to buffer if provided */
+		if (opt_buffer && buffer_size > 0) {
+			size_t copy_size = (buffer_size < data_size) ? buffer_size : data_size;
+			memcpy(opt_buffer, [ns_data bytes], copy_size);
+		}
+	}
+
+	return true;
+}
+
+SKA_API bool ska_kvpstore_delete(const char* key) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+
+	@autoreleasepool {
+		NSString* full_key = [NSString stringWithFormat:@"%s.%s",
+			ska_kvpstore_get_app_name(), key];
+
+		[[NSUserDefaults standardUserDefaults] removeObjectForKey:full_key];
+		[[NSUserDefaults standardUserDefaults] synchronize];
+	}
+
+	return true;
+}
+
 #endif /* SKA_PLATFORM_MACOS */

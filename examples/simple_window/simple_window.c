@@ -13,6 +13,7 @@
 
 #include <sk_app.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -117,6 +118,109 @@ int32_t main(int argc, char** argv) {
 	ska_log(ska_log_info, "[WINDOW] DPI scale:     %.2f",   ska_window_get_dpi_scale(window));
 	ska_log(ska_log_info, "[WINDOW] Refresh rate:  %.2f Hz", ska_window_get_refresh_rate(window));
 	ska_log(ska_log_info, "[WINDOW] Flags:         0x%08X", flags);
+
+// ========================================================================
+// KVP STORE DEMONSTRATION
+// ========================================================================
+
+	ska_log(ska_log_info, "[KVPSTORE] Testing persistent key-value storage...");
+	ska_kvpstore_set_app_name("simple_window_test");
+
+	// Test 1: Small data (4 bytes)
+	{
+		uint8_t small_data[] = {0xDE, 0xAD, 0xBE, 0xEF};
+		if (ska_kvpstore_save("test_small", small_data, sizeof(small_data))) {
+			ska_log(ska_log_info, "[KVPSTORE] Saved 4 bytes to 'test_small'");
+
+			uint8_t loaded[4] = {0};
+			size_t loaded_size = 0;
+			if (ska_kvpstore_load("test_small", loaded, sizeof(loaded), &loaded_size)) {
+				bool match = (loaded_size == sizeof(small_data)) &&
+				             (memcmp(loaded, small_data, sizeof(small_data)) == 0);
+				ska_log(match ? ska_log_info : ska_log_error,
+					"[KVPSTORE] Load 'test_small': size=%zu, match=%s",
+					loaded_size, match ? "YES" : "NO");
+			} else {
+				ska_log(ska_log_error, "[KVPSTORE] Failed to load 'test_small': %s", ska_error_get());
+			}
+		} else {
+			ska_log(ska_log_error, "[KVPSTORE] Failed to save 'test_small': %s", ska_error_get());
+		}
+	}
+
+	// Test 2: Medium data (256 bytes)
+	{
+		uint8_t medium_data[256];
+		for (int32_t i = 0; i < 256; i++) medium_data[i] = (uint8_t)i;
+
+		if (ska_kvpstore_save("test_medium", medium_data, sizeof(medium_data))) {
+			ska_log(ska_log_info, "[KVPSTORE] Saved 256 bytes to 'test_medium'");
+
+			uint8_t loaded[256] = {0};
+			size_t loaded_size = 0;
+			if (ska_kvpstore_load("test_medium", loaded, sizeof(loaded), &loaded_size)) {
+				bool match = (loaded_size == sizeof(medium_data)) &&
+				             (memcmp(loaded, medium_data, sizeof(medium_data)) == 0);
+				ska_log(match ? ska_log_info : ska_log_error,
+					"[KVPSTORE] Load 'test_medium': size=%zu, match=%s",
+					loaded_size, match ? "YES" : "NO");
+			} else {
+				ska_log(ska_log_error, "[KVPSTORE] Failed to load 'test_medium': %s", ska_error_get());
+			}
+		} else {
+			ska_log(ska_log_error, "[KVPSTORE] Failed to save 'test_medium': %s", ska_error_get());
+		}
+	}
+
+	// Test 3: Large data (8KB)
+	{
+		size_t large_size = 8 * 1024;
+		uint8_t* large_data = (uint8_t*)malloc(large_size);
+		for (size_t i = 0; i < large_size; i++) large_data[i] = (uint8_t)(i * 7);
+
+		if (ska_kvpstore_save("test_large", large_data, large_size)) {
+			ska_log(ska_log_info, "[KVPSTORE] Saved 8KB to 'test_large'");
+
+			// First query size only
+			size_t queried_size = 0;
+			if (ska_kvpstore_load("test_large", NULL, 0, &queried_size)) {
+				ska_log(ska_log_info, "[KVPSTORE] Size query: %zu bytes", queried_size);
+			}
+
+			uint8_t* loaded = (uint8_t*)malloc(large_size);
+			size_t loaded_size = 0;
+			if (ska_kvpstore_load("test_large", loaded, large_size, &loaded_size)) {
+				bool match = (loaded_size == large_size) &&
+				             (memcmp(loaded, large_data, large_size) == 0);
+				ska_log(match ? ska_log_info : ska_log_error,
+					"[KVPSTORE] Load 'test_large': size=%zu, match=%s",
+					loaded_size, match ? "YES" : "NO");
+			} else {
+				ska_log(ska_log_error, "[KVPSTORE] Failed to load 'test_large': %s", ska_error_get());
+			}
+			free(loaded);
+		} else {
+			ska_log(ska_log_error, "[KVPSTORE] Failed to save 'test_large': %s", ska_error_get());
+		}
+		free(large_data);
+	}
+
+	// Test 4: Delete
+	{
+		if (ska_kvpstore_delete("test_small")) {
+			ska_log(ska_log_info, "[KVPSTORE] Deleted 'test_small'");
+
+			// Verify it's gone
+			size_t size = 0;
+			if (!ska_kvpstore_load("test_small", NULL, 0, &size)) {
+				ska_log(ska_log_info, "[KVPSTORE] Verified 'test_small' no longer exists");
+			} else {
+				ska_log(ska_log_error, "[KVPSTORE] 'test_small' still exists after delete!");
+			}
+		}
+	}
+
+	ska_log(ska_log_info, "[KVPSTORE] Tests complete\n");
 
 // ========================================================================
 // FILE I/O DEMONSTRATION

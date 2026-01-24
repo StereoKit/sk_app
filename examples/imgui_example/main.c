@@ -15,6 +15,14 @@
 #include "imgui_impl_sk_app.h"
 #include "imgui_impl_sk_renderer.h"
 
+// Window geometry for persistence
+typedef struct window_geometry_t {
+	int32_t x, y, w, h;
+	uint32_t magic; // Simple validation
+} window_geometry_t;
+
+#define WINDOW_GEOMETRY_MAGIC 0x57494E47 // "WING"
+
 int32_t main(int argc, char** argv) {
 	(void)argc;
 	(void)argv;
@@ -30,12 +38,32 @@ int32_t main(int argc, char** argv) {
 
 	printf("[INIT] sk_app initialized\n");
 
-	// Create window
+	// Set up persistent storage
+	ska_kvpstore_set_app_name("imgui_example");
+
+	// Try to load saved window geometry
+	int32_t win_x = SKA_WINDOWPOS_CENTERED;
+	int32_t win_y = SKA_WINDOWPOS_CENTERED;
+	int32_t win_w = 1280;
+	int32_t win_h = 720;
+
+	window_geometry_t saved_geom = {0};
+	size_t geom_size = 0;
+	if (ska_kvpstore_load("window_geometry", &saved_geom, sizeof(saved_geom), &geom_size)) {
+		if (geom_size == sizeof(saved_geom) && saved_geom.magic == WINDOW_GEOMETRY_MAGIC) {
+			win_x = saved_geom.x;
+			win_y = saved_geom.y;
+			win_w = saved_geom.w;
+			win_h = saved_geom.h;
+			printf("[KVPSTORE] Restored window geometry: %dx%d at (%d, %d)\n", win_w, win_h, win_x, win_y);
+		}
+	}
+
+	// Create window with saved or default geometry
 	ska_window_t* window = ska_window_create(
 		"Dear ImGui + sk_app + sk_renderer",
-		SKA_WINDOWPOS_CENTERED,
-		SKA_WINDOWPOS_CENTERED,
-		1280, 720,
+		win_x, win_y,
+		win_w, win_h,
 		ska_window_resizable
 	);
 
@@ -304,6 +332,25 @@ int32_t main(int argc, char** argv) {
 			} else if (acquire_result != skr_acquire_success) {
 				ska_time_sleep(16);
 			}
+		}
+	}
+
+	// Save window geometry before cleanup
+	{
+		int32_t x, y, w, h;
+		ska_window_get_frame_position(window, &x, &y);
+		ska_window_get_content_size(window, &w, &h);
+
+		window_geometry_t geom = {
+			.x = x,
+			.y = y,
+			.w = w,
+			.h = h,
+			.magic = WINDOW_GEOMETRY_MAGIC
+		};
+
+		if (ska_kvpstore_save("window_geometry", &geom, sizeof(geom))) {
+			printf("[KVPSTORE] Saved window geometry: %dx%d at (%d, %d)\n", w, h, x, y);
 		}
 	}
 

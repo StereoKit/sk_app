@@ -939,6 +939,48 @@ SKA_API bool ska_get_cwd(char* ref_buffer, size_t buffer_size);
 SKA_API bool ska_set_cwd(const char* opt_path);
 
 // ============================================================================
+// Key-Value Persistent Storage
+// ============================================================================
+
+// Set the application name used for storage paths. Must be called before using
+// other kvpstore functions. The name should be filesystem-safe (alphanumeric,
+// underscores, hyphens). Defaults to "sk_app" if not called.
+//
+// Storage locations per platform:
+// - Linux: ~/.config/<app_name>/<key>
+// - Windows: Registry HKEY_CURRENT_USER\Software\<app_name>
+// - macOS: NSUserDefaults (keys prefixed with <app_name>.)
+// - Android: SharedPreferences file named <app_name>
+//
+// @param app_name Application name (UTF-8), copied internally
+SKA_API void ska_kvpstore_set_app_name(const char* app_name);
+
+// Save data to persistent storage. Creates storage location as needed.
+// Maximum recommended size is 64KB per key.
+//
+// @param key Storage key (alphanumeric, underscores, hyphens; max 64 chars)
+// @param data Data to save (can be NULL if size is 0)
+// @param size Size of data in bytes
+// @return true on success, false on failure (check ska_error_get())
+SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size);
+
+// Load data from persistent storage.
+// To query size only, pass opt_buffer=NULL and buffer_size=0.
+//
+// @param key Storage key
+// @param opt_buffer Buffer to receive data (can be NULL for size query)
+// @param buffer_size Size of buffer in bytes (0 for size query)
+// @param opt_out_size Receives actual data size (can be NULL)
+// @return true on success, false if key not found or error (check ska_error_get())
+SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size);
+
+// Delete data from persistent storage.
+//
+// @param key Storage key to delete
+// @return true on success or if key didn't exist, false on error
+SKA_API bool ska_kvpstore_delete(const char* key);
+
+// ============================================================================
 // Clipboard Support
 // ============================================================================
 

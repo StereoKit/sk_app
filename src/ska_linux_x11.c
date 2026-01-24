@@ -1476,4 +1476,124 @@ bool ska_platform_window_set_icon(ska_window_t* ref_window, const uint8_t* pixel
 	return true;
 }
 
+// ============================================================================
+// KVP Store (Linux: ~/.config/<app_name>/<key>)
+// ============================================================================
+
+#include <sys/stat.h>
+#include <errno.h>
+#include <pwd.h>
+#include <limits.h>
+
+static bool ska_kvpstore_get_path(const char* key, char* buffer, size_t buffer_size) {
+	// Get config directory (XDG_CONFIG_HOME or ~/.config)
+	const char* config_home = getenv("XDG_CONFIG_HOME");
+	char config_dir[PATH_MAX];
+
+	if (config_home && config_home[0] != '\0') {
+		snprintf(config_dir, sizeof(config_dir), "%s", config_home);
+	} else {
+		const char* home = getenv("HOME");
+		if (!home) {
+			struct passwd* pw = getpwuid(getuid());
+			if (pw) home = pw->pw_dir;
+		}
+		if (!home) {
+			ska_set_error("ska_kvpstore: unable to determine home directory");
+			return false;
+		}
+		snprintf(config_dir, sizeof(config_dir), "%s/.config", home);
+	}
+
+	// Create config dir if needed
+	struct stat st;
+	if (stat(config_dir, &st) != 0) {
+		if (mkdir(config_dir, 0755) != 0 && errno != EEXIST) {
+			ska_set_error("ska_kvpstore: failed to create config directory");
+			return false;
+		}
+	}
+
+	// Create app dir
+	char app_dir[PATH_MAX];
+	snprintf(app_dir, sizeof(app_dir), "%s/%s", config_dir, ska_kvpstore_get_app_name());
+	if (stat(app_dir, &st) != 0) {
+		if (mkdir(app_dir, 0755) != 0 && errno != EEXIST) {
+			ska_set_error("ska_kvpstore: failed to create app directory");
+			return false;
+		}
+	}
+
+	snprintf(buffer, buffer_size, "%s/%s", app_dir, key);
+	return true;
+}
+
+SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!data && size > 0) {
+		ska_set_error("ska_kvpstore_save: NULL data with non-zero size");
+		return false;
+	}
+
+	char path[PATH_MAX];
+	if (!ska_kvpstore_get_path(key, path, sizeof(path))) {
+		return false;
+	}
+
+	return ska_file_write(path, data, size);
+}
+
+SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+
+	char path[PATH_MAX];
+	if (!ska_kvpstore_get_path(key, path, sizeof(path))) {
+		return false;
+	}
+
+	if (!ska_file_exists(path)) {
+		ska_set_error("ska_kvpstore_load: key '%s' not found", key);
+		return false;
+	}
+
+	size_t file_size = ska_file_size(path);
+	if (opt_out_size) {
+		*opt_out_size = file_size;
+	}
+
+	// Size query only
+	if (!opt_buffer || buffer_size == 0) {
+		return true;
+	}
+
+	// Load data
+	void* file_data = NULL;
+	size_t actual_size = 0;
+	if (!ska_file_read(path, &file_data, &actual_size)) {
+		return false;
+	}
+
+	size_t copy_size = (actual_size < buffer_size) ? actual_size : buffer_size;
+	memcpy(opt_buffer, file_data, copy_size);
+	ska_file_free_data(file_data);
+
+	return true;
+}
+
+SKA_API bool ska_kvpstore_delete(const char* key) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+
+	char path[PATH_MAX];
+	if (!ska_kvpstore_get_path(key, path, sizeof(path))) {
+		return false;
+	}
+
+	if (unlink(path) != 0 && errno != ENOENT) {
+		ska_set_error("ska_kvpstore_delete: failed to delete '%s'", key);
+		return false;
+	}
+
+	return true;
+}
+
 #endif // SKA_PLATFORM_LINUX

@@ -30,6 +30,9 @@ static LARGE_INTEGER g_qpc_frequency;
 // Global state
 ska_state_t g_ska = {0};
 
+// KVP Store app name
+static char* g_kvpstore_app_name = NULL;
+
 // ============================================================================
 // Error Handling
 // ============================================================================
@@ -44,6 +47,51 @@ void ska_set_error(const char* fmt, ...) {
 
 SKA_API const char* ska_error_get(void) {
 	return g_ska.error_msg[0] != '\0' ? g_ska.error_msg : NULL;
+}
+
+// ============================================================================
+// KVP Store Common
+// ============================================================================
+
+SKA_API void ska_kvpstore_set_app_name(const char* app_name) {
+	if (g_kvpstore_app_name) {
+		free(g_kvpstore_app_name);
+		g_kvpstore_app_name = NULL;
+	}
+	if (app_name && app_name[0] != '\0') {
+		g_kvpstore_app_name = strdup(app_name);
+	}
+}
+
+const char* ska_kvpstore_get_app_name(void) {
+	return g_kvpstore_app_name ? g_kvpstore_app_name : "sk_app";
+}
+
+bool ska_kvpstore_validate_key(const char* key) {
+	if (!key || key[0] == '\0') {
+		ska_set_error("ska_kvpstore: key cannot be NULL or empty");
+		return false;
+	}
+
+	size_t len = 0;
+	for (const char* p = key; *p; p++, len++) {
+		char c = *p;
+		bool valid = (c >= 'a' && c <= 'z') ||
+		             (c >= 'A' && c <= 'Z') ||
+		             (c >= '0' && c <= '9') ||
+		             c == '_' || c == '-';
+		if (!valid) {
+			ska_set_error("ska_kvpstore: invalid character '%c' in key", c);
+			return false;
+		}
+	}
+
+	if (len > 64) {
+		ska_set_error("ska_kvpstore: key exceeds maximum length of 64 characters");
+		return false;
+	}
+
+	return true;
 }
 
 // ============================================================================
@@ -98,6 +146,12 @@ SKA_API void ska_shutdown(void) {
 	}
 
 	ska_platform_shutdown();
+
+	// Cleanup KVP store
+	if (g_kvpstore_app_name) {
+		free(g_kvpstore_app_name);
+		g_kvpstore_app_name = NULL;
+	}
 
 	g_ska.initialized = false;
 	ska_log(ska_log_info, "sk_app shutdown");

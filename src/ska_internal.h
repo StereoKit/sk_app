@@ -273,6 +273,10 @@ ska_window_t* ska_window_alloc(void);
 void ska_window_free(ska_window_t* ref_window);
 void ska_post_event(const ska_event_t* event);
 
+// KVP Store internal functions (for platform implementations)
+const char* ska_kvpstore_get_app_name(void);
+bool        ska_kvpstore_validate_key(const char* key);
+
 // Platform-specific initialization
 bool ska_platform_init(void);
 void ska_platform_shutdown(void);

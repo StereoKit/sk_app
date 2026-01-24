@@ -312,14 +312,12 @@ SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterat
 		if (need_stat) {
 			// Build full path for stat
 			size_t name_len = strlen(entry->d_name);
+
+			// Reallocate if name is longer than expected
 			if (path_len + 1 + name_len + 1 > buffer_size) {
-				// Reallocate if name is longer than expected
 				buffer_size = path_len + 1 + name_len + 1;
 				char* new_buffer = (char*)realloc(full_path, buffer_size);
-				if (!new_buffer) {
-					// Skip this entry on allocation failure
-					continue;
-				}
+				if (!new_buffer) continue;
 				full_path = new_buffer;
 			}
 			memcpy(full_path + path_len + 1, entry->d_name, name_len + 1);

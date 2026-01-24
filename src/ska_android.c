@@ -1759,4 +1759,230 @@ Java_net_stereokit_sk_1app_SkAppActivity_nativeOnFileDialogResult(
 		result->path_count, result->cancelled);
 }
 
+// ============================================================================
+// KVP Store (Android: SharedPreferences with Base64 encoding)
+// ============================================================================
+
+// JNI cache for kvpstore
+static struct {
+	jmethodID activity_getSharedPreferences;
+	jmethodID prefs_getString;
+	jmethodID prefs_edit;
+	jmethodID editor_putString;
+	jmethodID editor_remove;
+	jmethodID editor_apply;
+	jclass    base64_class;
+	jmethodID base64_encodeToString;
+	jmethodID base64_decode;
+	bool      initialized;
+} g_kvp_jni = {0};
+
+static bool ska_kvpstore_jni_init(void) {
+	if (g_kvp_jni.initialized) return true;
+
+	JNIEnv* env = ska_jni_get_env();
+	if (!env) return false;
+
+	// NativeActivity.getSharedPreferences(String name, int mode)
+	jclass activity_class = (*env)->FindClass(env, "android/app/NativeActivity");
+	g_kvp_jni.activity_getSharedPreferences = (*env)->GetMethodID(
+		env, activity_class, "getSharedPreferences",
+		"(Ljava/lang/String;I)Landroid/content/SharedPreferences;"
+	);
+
+	// SharedPreferences methods
+	jclass prefs_class = (*env)->FindClass(env, "android/content/SharedPreferences");
+	g_kvp_jni.prefs_getString = (*env)->GetMethodID(
+		env, prefs_class, "getString",
+		"(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+	);
+	g_kvp_jni.prefs_edit = (*env)->GetMethodID(
+		env, prefs_class, "edit",
+		"()Landroid/content/SharedPreferences$Editor;"
+	);
+
+	// SharedPreferences.Editor methods
+	jclass editor_class = (*env)->FindClass(env, "android/content/SharedPreferences$Editor");
+	g_kvp_jni.editor_putString = (*env)->GetMethodID(
+		env, editor_class, "putString",
+		"(Ljava/lang/String;Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;"
+	);
+	g_kvp_jni.editor_remove = (*env)->GetMethodID(
+		env, editor_class, "remove",
+		"(Ljava/lang/String;)Landroid/content/SharedPreferences$Editor;"
+	);
+	g_kvp_jni.editor_apply = (*env)->GetMethodID(
+		env, editor_class, "apply", "()V"
+	);
+
+	// Base64 for encoding binary data
+	jclass base64_local = (*env)->FindClass(env, "android/util/Base64");
+	g_kvp_jni.base64_class = (*env)->NewGlobalRef(env, base64_local);
+	(*env)->DeleteLocalRef(env, base64_local);
+
+	g_kvp_jni.base64_encodeToString = (*env)->GetStaticMethodID(
+		env, g_kvp_jni.base64_class, "encodeToString",
+		"([BI)Ljava/lang/String;"
+	);
+	g_kvp_jni.base64_decode = (*env)->GetStaticMethodID(
+		env, g_kvp_jni.base64_class, "decode",
+		"(Ljava/lang/String;I)[B"
+	);
+
+	g_kvp_jni.initialized = true;
+	return true;
+}
+
+SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!data && size > 0) {
+		ska_set_error("ska_kvpstore_save: NULL data with non-zero size");
+		return false;
+	}
+
+	if (!g_ska.android_app || !g_ska.android_app->activity) {
+		ska_set_error("ska_kvpstore: android activity not available");
+		return false;
+	}
+
+	if (!ska_kvpstore_jni_init()) {
+		ska_set_error("ska_kvpstore: JNI initialization failed");
+		return false;
+	}
+
+	JNIEnv* env = ska_jni_get_env();
+	if (!env) return false;
+
+	jobject activity = g_ska.android_app->activity->clazz;
+
+	// Get SharedPreferences
+	jstring prefs_name = (*env)->NewStringUTF(env, ska_kvpstore_get_app_name());
+	jobject prefs = (*env)->CallObjectMethod(env, activity,
+		g_kvp_jni.activity_getSharedPreferences, prefs_name, 0 /* MODE_PRIVATE */);
+
+	// Encode data to Base64
+	jbyteArray byte_array = (*env)->NewByteArray(env, (jsize)size);
+	if (data && size > 0) {
+		(*env)->SetByteArrayRegion(env, byte_array, 0, (jsize)size, (const jbyte*)data);
+	}
+
+	jstring encoded = (*env)->CallStaticObjectMethod(env, g_kvp_jni.base64_class,
+		g_kvp_jni.base64_encodeToString, byte_array, 0 /* DEFAULT */);
+
+	// Save to SharedPreferences
+	jstring jkey = (*env)->NewStringUTF(env, key);
+	jobject editor = (*env)->CallObjectMethod(env, prefs, g_kvp_jni.prefs_edit);
+	(*env)->CallObjectMethod(env, editor, g_kvp_jni.editor_putString, jkey, encoded);
+	(*env)->CallVoidMethod(env, editor, g_kvp_jni.editor_apply);
+
+	// Cleanup local refs
+	(*env)->DeleteLocalRef(env, prefs_name);
+	(*env)->DeleteLocalRef(env, prefs);
+	(*env)->DeleteLocalRef(env, byte_array);
+	(*env)->DeleteLocalRef(env, encoded);
+	(*env)->DeleteLocalRef(env, jkey);
+	(*env)->DeleteLocalRef(env, editor);
+
+	return true;
+}
+
+SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+
+	if (!g_ska.android_app || !g_ska.android_app->activity) {
+		ska_set_error("ska_kvpstore: android activity not available");
+		return false;
+	}
+
+	if (!ska_kvpstore_jni_init()) {
+		ska_set_error("ska_kvpstore: JNI initialization failed");
+		return false;
+	}
+
+	JNIEnv* env = ska_jni_get_env();
+	if (!env) return false;
+
+	jobject activity = g_ska.android_app->activity->clazz;
+
+	// Get SharedPreferences
+	jstring prefs_name = (*env)->NewStringUTF(env, ska_kvpstore_get_app_name());
+	jobject prefs = (*env)->CallObjectMethod(env, activity,
+		g_kvp_jni.activity_getSharedPreferences, prefs_name, 0);
+
+	// Get stored string
+	jstring jkey = (*env)->NewStringUTF(env, key);
+	jstring encoded = (*env)->CallObjectMethod(env, prefs, g_kvp_jni.prefs_getString, jkey, NULL);
+
+	if (!encoded) {
+		(*env)->DeleteLocalRef(env, prefs_name);
+		(*env)->DeleteLocalRef(env, prefs);
+		(*env)->DeleteLocalRef(env, jkey);
+		ska_set_error("ska_kvpstore_load: key '%s' not found", key);
+		return false;
+	}
+
+	// Decode Base64
+	jbyteArray decoded = (*env)->CallStaticObjectMethod(env, g_kvp_jni.base64_class,
+		g_kvp_jni.base64_decode, encoded, 0);
+
+	jsize data_size = (*env)->GetArrayLength(env, decoded);
+
+	if (opt_out_size) {
+		*opt_out_size = (size_t)data_size;
+	}
+
+	// Copy to buffer if provided
+	if (opt_buffer && buffer_size > 0) {
+		jsize copy_size = (buffer_size < (size_t)data_size) ? (jsize)buffer_size : data_size;
+		(*env)->GetByteArrayRegion(env, decoded, 0, copy_size, (jbyte*)opt_buffer);
+	}
+
+	// Cleanup
+	(*env)->DeleteLocalRef(env, prefs_name);
+	(*env)->DeleteLocalRef(env, prefs);
+	(*env)->DeleteLocalRef(env, jkey);
+	(*env)->DeleteLocalRef(env, encoded);
+	(*env)->DeleteLocalRef(env, decoded);
+
+	return true;
+}
+
+SKA_API bool ska_kvpstore_delete(const char* key) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+
+	if (!g_ska.android_app || !g_ska.android_app->activity) {
+		ska_set_error("ska_kvpstore: android activity not available");
+		return false;
+	}
+
+	if (!ska_kvpstore_jni_init()) {
+		ska_set_error("ska_kvpstore: JNI initialization failed");
+		return false;
+	}
+
+	JNIEnv* env = ska_jni_get_env();
+	if (!env) return false;
+
+	jobject activity = g_ska.android_app->activity->clazz;
+
+	// Get SharedPreferences
+	jstring prefs_name = (*env)->NewStringUTF(env, ska_kvpstore_get_app_name());
+	jobject prefs = (*env)->CallObjectMethod(env, activity,
+		g_kvp_jni.activity_getSharedPreferences, prefs_name, 0);
+
+	// Remove key
+	jstring jkey = (*env)->NewStringUTF(env, key);
+	jobject editor = (*env)->CallObjectMethod(env, prefs, g_kvp_jni.prefs_edit);
+	(*env)->CallObjectMethod(env, editor, g_kvp_jni.editor_remove, jkey);
+	(*env)->CallVoidMethod(env, editor, g_kvp_jni.editor_apply);
+
+	// Cleanup
+	(*env)->DeleteLocalRef(env, prefs_name);
+	(*env)->DeleteLocalRef(env, prefs);
+	(*env)->DeleteLocalRef(env, jkey);
+	(*env)->DeleteLocalRef(env, editor);
+
+	return true;
+}
+
 #endif // SKA_PLATFORM_ANDROID

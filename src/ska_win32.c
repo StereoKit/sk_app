@@ -1295,4 +1295,124 @@ static void ska_win32_check_file_dialog(void) {
 	ska_file_dialog_result_complete(result, g_win32_file_dialog.cancelled);
 }
 
+// ============================================================================
+// KVP Store (Windows: Registry HKEY_CURRENT_USER\Software\<app_name>)
+// ============================================================================
+
+SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!data && size > 0) {
+		ska_set_error("ska_kvpstore_save: NULL data with non-zero size");
+		return false;
+	}
+
+	// Build registry path: Software\<app_name>
+	char reg_path[256];
+	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_kvpstore_get_app_name());
+
+	HKEY hkey;
+	LONG result = RegCreateKeyExA(
+		HKEY_CURRENT_USER,
+		reg_path,
+		0,
+		NULL,
+		REG_OPTION_NON_VOLATILE,
+		KEY_WRITE,
+		NULL,
+		&hkey,
+		NULL
+	);
+
+	if (result != ERROR_SUCCESS) {
+		ska_set_error("ska_kvpstore_save: failed to create registry key (error %ld)", result);
+		return false;
+	}
+
+	// Store as REG_BINARY
+	result = RegSetValueExA(hkey, key, 0, REG_BINARY, (const BYTE*)data, (DWORD)size);
+	RegCloseKey(hkey);
+
+	if (result != ERROR_SUCCESS) {
+		ska_set_error("ska_kvpstore_save: failed to set registry value (error %ld)", result);
+		return false;
+	}
+
+	return true;
+}
+
+SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+
+	char reg_path[256];
+	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_kvpstore_get_app_name());
+
+	HKEY hkey;
+	LONG result = RegOpenKeyExA(HKEY_CURRENT_USER, reg_path, 0, KEY_READ, &hkey);
+
+	if (result != ERROR_SUCCESS) {
+		ska_set_error("ska_kvpstore_load: key '%s' not found", key);
+		return false;
+	}
+
+	DWORD type;
+	DWORD size = 0;
+
+	// Query size first
+	result = RegQueryValueExA(hkey, key, NULL, &type, NULL, &size);
+
+	if (result != ERROR_SUCCESS) {
+		RegCloseKey(hkey);
+		ska_set_error("ska_kvpstore_load: value '%s' not found", key);
+		return false;
+	}
+
+	if (opt_out_size) {
+		*opt_out_size = (size_t)size;
+	}
+
+	// Size query only
+	if (!opt_buffer || buffer_size == 0) {
+		RegCloseKey(hkey);
+		return true;
+	}
+
+	// Read data
+	DWORD read_size = (buffer_size < size) ? (DWORD)buffer_size : size;
+	result = RegQueryValueExA(hkey, key, NULL, &type, (BYTE*)opt_buffer, &read_size);
+	RegCloseKey(hkey);
+
+	if (result != ERROR_SUCCESS) {
+		ska_set_error("ska_kvpstore_load: failed to read value (error %ld)", result);
+		return false;
+	}
+
+	return true;
+}
+
+SKA_API bool ska_kvpstore_delete(const char* key) {
+	if (!ska_kvpstore_validate_key(key)) return false;
+
+	char reg_path[256];
+	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_kvpstore_get_app_name());
+
+	HKEY hkey;
+	LONG result = RegOpenKeyExA(HKEY_CURRENT_USER, reg_path, 0, KEY_WRITE, &hkey);
+
+	if (result != ERROR_SUCCESS) {
+		// Key doesn't exist, nothing to delete
+		return true;
+	}
+
+	result = RegDeleteValueA(hkey, key);
+	RegCloseKey(hkey);
+
+	// ERROR_FILE_NOT_FOUND is OK (value didn't exist)
+	if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
+		ska_set_error("ska_kvpstore_delete: failed to delete value (error %ld)", result);
+		return false;
+	}
+
+	return true;
+}
+
 #endif // SKA_PLATFORM_WIN32
