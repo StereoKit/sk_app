@@ -1305,14 +1305,24 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 		return false;
 	}
 
-	// Build registry path: Software\<app_name>
+	// Build registry path: Software\<app_name> (wide string for Unicode support)
 	char reg_path[256];
 	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_kvpstore_get_app_name());
+	wchar_t* wreg_path = ska_utf8_to_wide(reg_path);
+	if (!wreg_path) {
+		return false;
+	}
+
+	wchar_t* wkey = ska_utf8_to_wide(key);
+	if (!wkey) {
+		ska_free(wreg_path);
+		return false;
+	}
 
 	HKEY hkey;
-	LONG result = RegCreateKeyExA(
+	LONG result = RegCreateKeyExW(
 		HKEY_CURRENT_USER,
-		reg_path,
+		wreg_path,
 		0,
 		NULL,
 		REG_OPTION_NON_VOLATILE,
@@ -1321,13 +1331,16 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 		&hkey,
 		NULL
 	);
+	ska_free(wreg_path);
 
 	if (result != ERROR_SUCCESS) {
+		ska_free(wkey);
 		return false;
 	}
 
 	// Store as REG_BINARY
-	result = RegSetValueExA(hkey, key, 0, REG_BINARY, (const BYTE*)data, (DWORD)size);
+	result = RegSetValueExW(hkey, wkey, 0, REG_BINARY, (const BYTE*)data, (DWORD)size);
+	ska_free(wkey);
 	RegCloseKey(hkey);
 
 	if (result != ERROR_SUCCESS) {
@@ -1340,13 +1353,26 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size) {
 	if (!ska_kvpstore_validate_key(key)) return false;
 
+	// Build registry path (wide string for Unicode support)
 	char reg_path[256];
 	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_kvpstore_get_app_name());
+	wchar_t* wreg_path = ska_utf8_to_wide(reg_path);
+	if (!wreg_path) {
+		return false;
+	}
+
+	wchar_t* wkey = ska_utf8_to_wide(key);
+	if (!wkey) {
+		ska_free(wreg_path);
+		return false;
+	}
 
 	HKEY hkey;
-	LONG result = RegOpenKeyExA(HKEY_CURRENT_USER, reg_path, 0, KEY_READ, &hkey);
+	LONG result = RegOpenKeyExW(HKEY_CURRENT_USER, wreg_path, 0, KEY_READ, &hkey);
+	ska_free(wreg_path);
 
 	if (result != ERROR_SUCCESS) {
+		ska_free(wkey);
 		return false;
 	}
 
@@ -1354,9 +1380,10 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 	DWORD size = 0;
 
 	// Query size first
-	result = RegQueryValueExA(hkey, key, NULL, &type, NULL, &size);
+	result = RegQueryValueExW(hkey, wkey, NULL, &type, NULL, &size);
 
 	if (result != ERROR_SUCCESS) {
+		ska_free(wkey);
 		RegCloseKey(hkey);
 		return false;
 	}
@@ -1367,13 +1394,15 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 
 	// Size query only
 	if (!opt_buffer || buffer_size == 0) {
+		ska_free(wkey);
 		RegCloseKey(hkey);
 		return true;
 	}
 
 	// Read data
 	DWORD read_size = (buffer_size < size) ? (DWORD)buffer_size : size;
-	result = RegQueryValueExA(hkey, key, NULL, &type, (BYTE*)opt_buffer, &read_size);
+	result = RegQueryValueExW(hkey, wkey, NULL, &type, (BYTE*)opt_buffer, &read_size);
+	ska_free(wkey);
 	RegCloseKey(hkey);
 
 	if (result != ERROR_SUCCESS) {
@@ -1386,18 +1415,32 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 SKA_API bool ska_kvpstore_delete(const char* key) {
 	if (!ska_kvpstore_validate_key(key)) return false;
 
+	// Build registry path (wide string for Unicode support)
 	char reg_path[256];
 	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_kvpstore_get_app_name());
+	wchar_t* wreg_path = ska_utf8_to_wide(reg_path);
+	if (!wreg_path) {
+		return false;
+	}
+
+	wchar_t* wkey = ska_utf8_to_wide(key);
+	if (!wkey) {
+		ska_free(wreg_path);
+		return false;
+	}
 
 	HKEY hkey;
-	LONG result = RegOpenKeyExA(HKEY_CURRENT_USER, reg_path, 0, KEY_WRITE, &hkey);
+	LONG result = RegOpenKeyExW(HKEY_CURRENT_USER, wreg_path, 0, KEY_WRITE, &hkey);
+	ska_free(wreg_path);
 
 	if (result != ERROR_SUCCESS) {
+		ska_free(wkey);
 		// Key doesn't exist, nothing to delete
 		return true;
 	}
 
-	result = RegDeleteValueA(hkey, key);
+	result = RegDeleteValueW(hkey, wkey);
+	ska_free(wkey);
 	RegCloseKey(hkey);
 
 	// ERROR_FILE_NOT_FOUND is OK (value didn't exist)

@@ -43,7 +43,17 @@ SKA_API bool ska_file_read(const char* filename, void** out_data, size_t* out_si
 		return false;
 	}
 
+#ifdef SKA_PLATFORM_WIN32
+	wchar_t* wfilename = ska_utf8_to_wide(filename);
+	if (!wfilename) {
+		ska_set_error("ska_file_read: Failed to convert filename to UTF-16");
+		return false;
+	}
+	FILE* file = _wfopen(wfilename, L"rb");
+	ska_free(wfilename);
+#else
 	FILE* file = fopen(filename, "rb");
+#endif
 	if (!file) {
 		ska_set_error("ska_file_read: Failed to open '%s'", filename);
 		return false;
@@ -127,7 +137,17 @@ SKA_API bool ska_file_write(const char* filename, const void* data, size_t size)
 		return false;
 	}
 
+#ifdef SKA_PLATFORM_WIN32
+	wchar_t* wfilename = ska_utf8_to_wide(filename);
+	if (!wfilename) {
+		ska_set_error("ska_file_write: Failed to convert filename to UTF-16");
+		return false;
+	}
+	FILE* file = _wfopen(wfilename, L"wb");
+	ska_free(wfilename);
+#else
 	FILE* file = fopen(filename, "wb");
+#endif
 	if (!file) {
 		ska_set_error("ska_file_write: Failed to open '%s' for writing", filename);
 		return false;
@@ -167,8 +187,14 @@ SKA_API bool ska_file_exists(const char* filename) {
 	}
 
 #ifdef SKA_PLATFORM_WIN32
-	// Windows: use _access
-	return _access(filename, F_OK) == 0;
+	// Windows: use _waccess for Unicode support
+	wchar_t* wfilename = ska_utf8_to_wide(filename);
+	if (!wfilename) {
+		return false;
+	}
+	int result = _waccess(wfilename, F_OK);
+	ska_free(wfilename);
+	return result == 0;
 #else
 	// POSIX: use access
 	return access(filename, F_OK) == 0;
@@ -181,9 +207,15 @@ SKA_API size_t ska_file_size(const char* filename) {
 	}
 
 #ifdef SKA_PLATFORM_WIN32
-	// Windows: use _stat
+	// Windows: use _wstat for Unicode support
+	wchar_t* wfilename = ska_utf8_to_wide(filename);
+	if (!wfilename) {
+		return 0;
+	}
 	struct _stat st;
-	if (_stat(filename, &st) != 0) {
+	int result = _wstat(wfilename, &st);
+	ska_free(wfilename);
+	if (result != 0) {
 		return 0;
 	}
 	return (size_t)st.st_size;
@@ -212,28 +244,38 @@ SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterat
 	}
 
 #ifdef SKA_PLATFORM_WIN32
-	// Windows: use FindFirstFile/FindNextFile
-	size_t path_len    = strlen(path);
-	char*  search_path = (char*)ska_malloc(path_len + 3);  // path + "\\*" + null
-	if (!search_path) {
+	// Windows: use FindFirstFileW/FindNextFileW for Unicode support
+	// Convert path to wide string and append \*
+	wchar_t* wpath = ska_utf8_to_wide(path);
+	if (!wpath) {
+		ska_set_error("ska_dir_iterate: Failed to convert path to UTF-16");
+		return false;
+	}
+
+	size_t wpath_len = wcslen(wpath);
+	wchar_t* wsearch_path = (wchar_t*)ska_malloc((wpath_len + 3) * sizeof(wchar_t));
+	if (!wsearch_path) {
+		ska_free(wpath);
 		ska_set_error("ska_dir_iterate: Failed to allocate memory");
 		return false;
 	}
 
 	// Build search pattern: path\*
-	memcpy(search_path, path, path_len);
-	if (path_len > 0 && path[path_len - 1] != '\\' && path[path_len - 1] != '/') {
-		search_path[path_len    ] = '\\';
-		search_path[path_len + 1] = '*';
-		search_path[path_len + 2] = '\0';
+	wcscpy(wsearch_path, wpath);
+	ska_free(wpath);
+
+	if (wpath_len > 0 && wsearch_path[wpath_len - 1] != L'\\' && wsearch_path[wpath_len - 1] != L'/') {
+		wsearch_path[wpath_len    ] = L'\\';
+		wsearch_path[wpath_len + 1] = L'*';
+		wsearch_path[wpath_len + 2] = L'\0';
 	} else {
-		search_path[path_len    ] = '*';
-		search_path[path_len + 1] = '\0';
+		wsearch_path[wpath_len    ] = L'*';
+		wsearch_path[wpath_len + 1] = L'\0';
 	}
 
-	WIN32_FIND_DATAA find_data;
-	HANDLE           find_handle = FindFirstFileA(search_path, &find_data);
-	ska_free(search_path);
+	WIN32_FIND_DATAW find_data;
+	HANDLE find_handle = FindFirstFileW(wsearch_path, &find_data);
+	ska_free(wsearch_path);
 
 	if (find_handle == INVALID_HANDLE_VALUE) {
 		DWORD err = GetLastError();
@@ -247,21 +289,28 @@ SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterat
 
 	do {
 		// Skip "." and ".."
-		if (find_data.cFileName[0] == '.') {
-			if (find_data.cFileName[1] == '\0') continue;
-			if (find_data.cFileName[1] == '.' && find_data.cFileName[2] == '\0') continue;
+		if (find_data.cFileName[0] == L'.') {
+			if (find_data.cFileName[1] == L'\0') continue;
+			if (find_data.cFileName[1] == L'.' && find_data.cFileName[2] == L'\0') continue;
 		}
 
+		// Convert filename to UTF-8
+		char* utf8_name = ska_wide_to_utf8(find_data.cFileName);
+		if (!utf8_name) continue;
+
 		ska_dir_entry_t dir_entry;
-		dir_entry.name   = find_data.cFileName;
+		dir_entry.name   = utf8_name;
 		dir_entry.is_dir = (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 		dir_entry.size   = dir_entry.is_dir ? 0 : ((size_t)find_data.nFileSizeHigh << 32) | find_data.nFileSizeLow;
 
-		if (!callback(opt_context, &dir_entry)) {
+		bool should_continue = callback(opt_context, &dir_entry);
+		ska_free(utf8_name);
+
+		if (!should_continue) {
 			FindClose(find_handle);
 			return true; // Callback requested stop, not an error
 		}
-	} while (FindNextFileA(find_handle, &find_data));
+	} while (FindNextFileW(find_handle, &find_data));
 
 	FindClose(find_handle);
 	return true;
@@ -357,10 +406,26 @@ SKA_API bool ska_get_cwd(char* ref_buffer, size_t buffer_size) {
 	ref_buffer[0] = '\0';
 
 #ifdef SKA_PLATFORM_WIN32
-	if (_getcwd(ref_buffer, (int)buffer_size) == NULL) {
-		ska_set_error("ska_get_cwd: _getcwd failed");
+	// Use _wgetcwd for Unicode support, then convert to UTF-8
+	wchar_t* wcwd = _wgetcwd(NULL, 0);
+	if (wcwd == NULL) {
+		ska_set_error("ska_get_cwd: _wgetcwd failed");
 		return false;
 	}
+	char* utf8_cwd = ska_wide_to_utf8(wcwd);
+	free(wcwd);  // _wgetcwd uses malloc internally
+	if (!utf8_cwd) {
+		ska_set_error("ska_get_cwd: Failed to convert path to UTF-8");
+		return false;
+	}
+	size_t len = strlen(utf8_cwd);
+	if (len >= buffer_size) {
+		ska_free(utf8_cwd);
+		ska_set_error("ska_get_cwd: Buffer too small");
+		return false;
+	}
+	memcpy(ref_buffer, utf8_cwd, len + 1);
+	ska_free(utf8_cwd);
 #else
 	if (getcwd(ref_buffer, buffer_size) == NULL) {
 		ska_set_error("ska_get_cwd: getcwd failed");
@@ -401,11 +466,26 @@ SKA_API bool ska_get_exe_path(char* ref_buffer, size_t buffer_size) {
 	ref_buffer[0] = '\0';
 
 #if defined(SKA_PLATFORM_WIN32)
-	DWORD len = GetModuleFileNameA(NULL, ref_buffer, (DWORD)buffer_size);
-	if (len == 0 || len >= buffer_size) {
-		ska_set_error("ska_get_exe_path: GetModuleFileNameA failed");
+	// Use GetModuleFileNameW for Unicode support, then convert to UTF-8
+	wchar_t wpath[MAX_PATH];
+	DWORD len = GetModuleFileNameW(NULL, wpath, MAX_PATH);
+	if (len == 0 || len >= MAX_PATH) {
+		ska_set_error("ska_get_exe_path: GetModuleFileNameW failed");
 		return false;
 	}
+	char* utf8_path = ska_wide_to_utf8(wpath);
+	if (!utf8_path) {
+		ska_set_error("ska_get_exe_path: Failed to convert path to UTF-8");
+		return false;
+	}
+	size_t utf8_len = strlen(utf8_path);
+	if (utf8_len >= buffer_size) {
+		ska_free(utf8_path);
+		ska_set_error("ska_get_exe_path: Buffer too small");
+		return false;
+	}
+	memcpy(ref_buffer, utf8_path, utf8_len + 1);
+	ska_free(utf8_path);
 	return true;
 
 #elif defined(SKA_PLATFORM_LINUX)
@@ -454,8 +534,16 @@ SKA_API bool ska_set_cwd(const char* opt_path) {
 	}
 
 #ifdef SKA_PLATFORM_WIN32
-	if (_chdir(opt_path) != 0) {
-		ska_set_error("ska_set_cwd: _chdir failed for '%s'", opt_path);
+	// Use _wchdir for Unicode support
+	wchar_t* wpath = ska_utf8_to_wide(opt_path);
+	if (!wpath) {
+		ska_set_error("ska_set_cwd: Failed to convert path to UTF-16");
+		return false;
+	}
+	int result = _wchdir(wpath);
+	ska_free(wpath);
+	if (result != 0) {
+		ska_set_error("ska_set_cwd: _wchdir failed for '%s'", opt_path);
 		return false;
 	}
 #else
