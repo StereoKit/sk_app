@@ -1179,7 +1179,6 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 		NSData* ns_data = [[NSUserDefaults standardUserDefaults] dataForKey:full_key];
 
 		if (!ns_data) {
-			ska_set_error("ska_kvpstore_load: key '%s' not found", key);
 			return false;
 		}
 

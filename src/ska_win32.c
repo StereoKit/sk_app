@@ -1302,7 +1302,6 @@ static void ska_win32_check_file_dialog(void) {
 SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 	if (!ska_kvpstore_validate_key(key)) return false;
 	if (!data && size > 0) {
-		ska_set_error("ska_kvpstore_save: NULL data with non-zero size");
 		return false;
 	}
 
@@ -1324,7 +1323,6 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 	);
 
 	if (result != ERROR_SUCCESS) {
-		ska_set_error("ska_kvpstore_save: failed to create registry key (error %ld)", result);
 		return false;
 	}
 
@@ -1333,7 +1331,6 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 	RegCloseKey(hkey);
 
 	if (result != ERROR_SUCCESS) {
-		ska_set_error("ska_kvpstore_save: failed to set registry value (error %ld)", result);
 		return false;
 	}
 
@@ -1350,7 +1347,6 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 	LONG result = RegOpenKeyExA(HKEY_CURRENT_USER, reg_path, 0, KEY_READ, &hkey);
 
 	if (result != ERROR_SUCCESS) {
-		ska_set_error("ska_kvpstore_load: key '%s' not found", key);
 		return false;
 	}
 
@@ -1362,7 +1358,6 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 
 	if (result != ERROR_SUCCESS) {
 		RegCloseKey(hkey);
-		ska_set_error("ska_kvpstore_load: value '%s' not found", key);
 		return false;
 	}
 
@@ -1382,7 +1377,6 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 	RegCloseKey(hkey);
 
 	if (result != ERROR_SUCCESS) {
-		ska_set_error("ska_kvpstore_load: failed to read value (error %ld)", result);
 		return false;
 	}
 
@@ -1408,7 +1402,6 @@ SKA_API bool ska_kvpstore_delete(const char* key) {
 
 	// ERROR_FILE_NOT_FOUND is OK (value didn't exist)
 	if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
-		ska_set_error("ska_kvpstore_delete: failed to delete value (error %ld)", result);
 		return false;
 	}
 

@@ -392,42 +392,45 @@ static void ska_path_get_directory(char* path) {
 	}
 }
 
-// Helper: Get executable path
-static bool ska_get_executable_path(char* ref_buffer, size_t buffer_size) {
-	if (!ref_buffer || buffer_size == 0) return false;
+SKA_API bool ska_get_exe_path(char* ref_buffer, size_t buffer_size) {
+	if (!ref_buffer || buffer_size == 0) {
+		ska_set_error("ska_get_exe_path: Invalid buffer");
+		return false;
+	}
 
 	ref_buffer[0] = '\0';
 
 #if defined(SKA_PLATFORM_WIN32)
-	// Windows: GetModuleFileNameA
 	DWORD len = GetModuleFileNameA(NULL, ref_buffer, (DWORD)buffer_size);
 	if (len == 0 || len >= buffer_size) {
+		ska_set_error("ska_get_exe_path: GetModuleFileNameA failed");
 		return false;
 	}
 	return true;
 
 #elif defined(SKA_PLATFORM_LINUX)
-	// Linux: readlink /proc/self/exe
 	ssize_t len = readlink("/proc/self/exe", ref_buffer, buffer_size - 1);
 	if (len < 0 || (size_t)len >= buffer_size) {
+		ska_set_error("ska_get_exe_path: readlink failed");
 		return false;
 	}
 	ref_buffer[len] = '\0';
 	return true;
 
 #elif defined(SKA_PLATFORM_MACOS)
-	// macOS: _NSGetExecutablePath
 	uint32_t size = (uint32_t)buffer_size;
 	if (_NSGetExecutablePath(ref_buffer, &size) != 0) {
+		ska_set_error("ska_get_exe_path: _NSGetExecutablePath failed");
 		return false;
 	}
 	return true;
 
 #elif defined(SKA_PLATFORM_ANDROID)
-	// Android: No meaningful executable path
+	ska_set_error("ska_get_exe_path: Not supported on Android");
 	return false;
 
 #else
+	ska_set_error("ska_get_exe_path: Not supported on this platform");
 	return false;
 #endif
 }
@@ -442,8 +445,8 @@ SKA_API bool ska_set_cwd(const char* opt_path) {
 
 	if (opt_path == NULL) {
 		// Get executable directory
-		if (!ska_get_executable_path(path_buffer, sizeof(path_buffer))) {
-			ska_set_error("ska_set_cwd: Failed to get executable path");
+		if (!ska_get_exe_path(path_buffer, sizeof(path_buffer))) {
+			ska_set_error("ska_set_cwd: ska_get_exe_path failed");
 			return false;
 		}
 		ska_path_get_directory(path_buffer);

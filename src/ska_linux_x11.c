@@ -1566,7 +1566,6 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 	}
 
 	if (!ska_file_exists(path)) {
-		ska_set_error("ska_kvpstore_load: key '%s' not found", key);
 		return false;
 	}
 

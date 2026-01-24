@@ -938,6 +938,15 @@ SKA_API bool ska_get_cwd(char* ref_buffer, size_t buffer_size);
 // @return true on success, false on failure (check ska_error_get())
 SKA_API bool ska_set_cwd(const char* opt_path);
 
+// Get the path to the current executable.
+// Writes the path to ref_buffer (null-terminated). On failure, ref_buffer[0] is set to '\0'.
+// On Android, this function always fails (APKs don't have a traditional executable path).
+//
+// @param ref_buffer Buffer to receive the path (UTF-8)
+// @param buffer_size Size of buffer in bytes (should include space for null terminator)
+// @return true on success, false on failure (check ska_error_get())
+SKA_API bool ska_get_exe_path(char* ref_buffer, size_t buffer_size);
+
 // ============================================================================
 // Key-Value Persistent Storage
 // ============================================================================

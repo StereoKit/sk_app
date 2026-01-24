@@ -1917,7 +1917,6 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 		(*env)->DeleteLocalRef(env, prefs_name);
 		(*env)->DeleteLocalRef(env, prefs);
 		(*env)->DeleteLocalRef(env, jkey);
-		ska_set_error("ska_kvpstore_load: key '%s' not found", key);
 		return false;
 	}
 
