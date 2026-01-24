@@ -1383,7 +1383,6 @@ SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out
 
 	AAsset* asset = AAssetManager_open(asset_manager, asset_name, AASSET_MODE_BUFFER);
 	if (!asset) {
-		ska_set_error("ska_asset_read: Failed to open asset '%s'", asset_name);
 		return false;
 	}
 
