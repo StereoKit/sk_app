@@ -599,7 +599,6 @@ SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out
 		return result;
 	}
 
-	ska_set_error("ska_asset_read: Asset '%s' not found in assets/ or Assets/", asset_name);
 	ska_free(path);
 	return false;
 }
