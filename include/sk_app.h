@@ -49,8 +49,8 @@ extern "C" {
 #endif
 
 // Version
-#define SKA_VERSION_MAJOR 1
-#define SKA_VERSION_MINOR 0
+#define SKA_VERSION_MAJOR 0
+#define SKA_VERSION_MINOR 1
 #define SKA_VERSION_PATCH 0
 
 // Forward declarations

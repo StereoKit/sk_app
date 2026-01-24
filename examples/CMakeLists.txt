@@ -6,3 +6,4 @@
 add_subdirectory(test_window)
 add_subdirectory(renderer_example)
 add_subdirectory(imgui_example)
+add_subdirectory(minimal_window)
