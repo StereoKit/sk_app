@@ -4,10 +4,8 @@
 #include "imgui_impl_sk_app.h"
 #include <sk_app.h>
 #include "imgui.h"
-#include "imgui_internal.h"  // For ImGuiSettingsHandler
 #include <cstring>
 #include <cstdlib>
-#include <cstdio>
 
 // Backend data stored in io.BackendPlatformUserData
 struct ImGui_ImplSkApp_Data
@@ -20,90 +18,6 @@ struct ImGui_ImplSkApp_Data
 
 	ImGui_ImplSkApp_Data() { memset(this, 0, sizeof(*this)); }
 };
-
-// Window settings data - static so it survives shutdown for ini save
-struct ImGui_ImplSkApp_SettingsData
-{
-	bool    loaded;
-	int32_t x, y;
-	int32_t w, h;
-} static g_SkAppSettings = {false, 0, 0, 0, 0};
-
-// Settings handler for persisting window position/size
-static void ImGui_ImplSkApp_SettingsHandler_ClearAll(ImGuiContext*, ImGuiSettingsHandler*)
-{
-	g_SkAppSettings.loaded = false;
-	g_SkAppSettings.x      = 0;
-	g_SkAppSettings.y      = 0;
-	g_SkAppSettings.w      = 0;
-	g_SkAppSettings.h      = 0;
-}
-
-static void* ImGui_ImplSkApp_SettingsHandler_ReadOpen(ImGuiContext*, ImGuiSettingsHandler*, const char* name)
-{
-	// We only persist a single entry named "Main"
-	if (strcmp(name, "Main") != 0)
-		return nullptr;
-	return &g_SkAppSettings;
-}
-
-static void ImGui_ImplSkApp_SettingsHandler_ReadLine(ImGuiContext*, ImGuiSettingsHandler*, void* entry, const char* line)
-{
-	ImGui_ImplSkApp_SettingsData* settings = (ImGui_ImplSkApp_SettingsData*)entry;
-	int x, y, w, h;
-
-	if (sscanf(line, "Pos=%d,%d", &x, &y) == 2) {
-		settings->x      = x;
-		settings->y      = y;
-		settings->loaded = true;
-	}
-	else if (sscanf(line, "Size=%d,%d", &w, &h) == 2) {
-		settings->w = w;
-		settings->h = h;
-	}
-}
-
-static void ImGui_ImplSkApp_SettingsHandler_ApplyAll(ImGuiContext*, ImGuiSettingsHandler* handler)
-{
-	ImGui_ImplSkApp_Data* bd = (ImGui_ImplSkApp_Data*)handler->UserData;
-	if (!g_SkAppSettings.loaded || !bd || !bd->window)
-		return;
-
-	// Apply saved frame position and size
-	if (g_SkAppSettings.w > 0 && g_SkAppSettings.h > 0) {
-		ska_window_set_frame_size(bd->window, g_SkAppSettings.w, g_SkAppSettings.h);
-	}
-	ska_window_set_frame_position(bd->window, g_SkAppSettings.x, g_SkAppSettings.y);
-}
-
-static void ImGui_ImplSkApp_SettingsHandler_WriteAll(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuffer* buf)
-{
-	// Get backend data - if it's been destroyed, use cached settings
-	ImGui_ImplSkApp_Data* bd = (ImGui_ImplSkApp_Data*)handler->UserData;
-
-	int32_t x, y, w, h;
-
-	if (bd && bd->window) {
-		// Backend still active - get current window frame state
-		ska_window_get_frame_position(bd->window, &x, &y);
-		ska_window_get_frame_size(bd->window, &w, &h);
-	} else {
-		// Backend destroyed - use cached settings
-		if (g_SkAppSettings.w <= 0 || g_SkAppSettings.h <= 0)
-			return;  // No valid settings to save
-
-		x = g_SkAppSettings.x;
-		y = g_SkAppSettings.y;
-		w = g_SkAppSettings.w;
-		h = g_SkAppSettings.h;
-	}
-
-	// Write settings section
-	buf->appendf("[%s][Main]\n", handler->TypeName);
-	buf->appendf("Pos=%d,%d\n", x, y);
-	buf->appendf("Size=%d,%d\n", w, h);
-	buf->appendf("\n");
-}
 
 static ImGui_ImplSkApp_Data* ImGui_ImplSkApp_GetBackendData()
 {
@@ -229,18 +143,6 @@ bool ImGui_ImplSkApp_Init(ska_window_t* window)
 	bd->window = window;
 	bd->time = 0.0;
 
-	// Register settings handler for window position/size persistence
-	ImGuiSettingsHandler ini_handler;
-	ini_handler.TypeName   = "AppHostWindow";
-	ini_handler.TypeHash   = ImHashStr("AppHostWindow");
-	ini_handler.ClearAllFn = ImGui_ImplSkApp_SettingsHandler_ClearAll;
-	ini_handler.ReadOpenFn = ImGui_ImplSkApp_SettingsHandler_ReadOpen;
-	ini_handler.ReadLineFn = ImGui_ImplSkApp_SettingsHandler_ReadLine;
-	ini_handler.ApplyAllFn = ImGui_ImplSkApp_SettingsHandler_ApplyAll;
-	ini_handler.WriteAllFn = ImGui_ImplSkApp_SettingsHandler_WriteAll;
-	ini_handler.UserData   = bd;
-	ImGui::GetCurrentContext()->SettingsHandlers.push_back(ini_handler);
-
 	// Setup clipboard callbacks
 	io.SetClipboardTextFn = [](void*, const char* text) {
 		ska_clipboard_set_text(text);
@@ -269,18 +171,6 @@ void ImGui_ImplSkApp_Shutdown()
 {
 	ImGui_ImplSkApp_Data* bd = ImGui_ImplSkApp_GetBackendData();
 	IM_ASSERT(bd != nullptr && "No platform backend to shutdown!");
-
-	// Cache window frame settings before destroying backend data
-	// (WriteAll may be called during igDestroyContext after bd is deleted)
-	if (bd->window) {
-		ska_window_get_frame_position(bd->window, &g_SkAppSettings.x, &g_SkAppSettings.y);
-		ska_window_get_frame_size(bd->window, &g_SkAppSettings.w, &g_SkAppSettings.h);
-	}
-
-	// Clear the settings handler's UserData (WriteAll will use cached g_SkAppSettings)
-	ImGuiSettingsHandler* handler = ImGui::FindSettingsHandler("AppHostWindow");
-	if (handler)
-		handler->UserData = nullptr;
 
 	ImGuiIO& io = ImGui::GetIO();
 	io.BackendPlatformName = nullptr;
