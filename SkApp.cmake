@@ -140,6 +140,7 @@ function(add_skapp SKA_TARGET)
 
 		apk_add_java_sources(${SKA_TARGET} "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/android/java"
 			"net/stereokit/sk_app/SkAppActivity.java"
+			"net/stereokit/sk_app/SkAppResultFragment.java"
 		)
 
 		message(STATUS "sk_app Android target configured: ${SKA_TARGET}")

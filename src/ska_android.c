@@ -36,7 +36,7 @@ SKA_API void ska_android_set_app(void* app) {
 }
 
 // ============================================================================
-// Cached JNI references for window management (freeform/DEX mode)
+// Cached JNI references
 // ============================================================================
 // Method IDs and field IDs are stable once looked up and can be cached.
 // Classes must be converted to global references to survive across JNI calls.
@@ -56,6 +56,10 @@ static struct {
 	jfieldID    lp_y;
 	jfieldID    lp_width;
 	jfieldID    lp_height;
+	// Content URI helpers (Uri.parse, ContentResolver)
+	jclass      uri_class;
+	jmethodID   uri_parse;
+	jmethodID   ctx_getContentResolver;
 } g_jni_cache = {0};
 
 // ============================================================================
@@ -121,9 +125,25 @@ static void ska_jni_cache_init(void) {
 	g_jni_cache.lp_y      = (*env)->GetFieldID(env, lp_class, "y", "I");
 	g_jni_cache.lp_width  = (*env)->GetFieldID(env, lp_class, "width", "I");
 	g_jni_cache.lp_height = (*env)->GetFieldID(env, lp_class, "height", "I");
+
+	// Content URI helpers — used by content_read and file dialog results
+	jclass uri_class = (*env)->FindClass(env, "android/net/Uri");
+	g_jni_cache.uri_class = (*env)->NewGlobalRef(env, uri_class);
+	g_jni_cache.uri_parse = (*env)->GetStaticMethodID(env, uri_class,
+		"parse", "(Ljava/lang/String;)Landroid/net/Uri;");
+	(*env)->DeleteLocalRef(env, uri_class);
+
+	jclass ctx_class = (*env)->FindClass(env, "android/content/Context");
+	g_jni_cache.ctx_getContentResolver = (*env)->GetMethodID(env, ctx_class,
+		"getContentResolver", "()Landroid/content/ContentResolver;");
+	(*env)->DeleteLocalRef(env, ctx_class);
 }
 
 static void ska_jni_cache_shutdown(void) {
+	if (g_jni_cache.uri_class) {
+		JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
+		if (env) (*env)->DeleteGlobalRef(env, g_jni_cache.uri_class);
+	}
 	memset(&g_jni_cache, 0, sizeof(g_jni_cache));
 }
 
@@ -1636,6 +1656,101 @@ SKA_API bool ska_asset_read_text(const char* asset_name, char** out_text) {
 }
 
 // ============================================================================
+// Content URI Reader
+// ============================================================================
+
+bool ska_android_content_read(const char* uri_str, void** out_data, size_t* out_size) {
+	if (!uri_str || !out_data) return false;
+
+	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
+	if (!env || !g_ska.android_context) {
+		ska_set_error("ska_android_content_read: JNI or context not available");
+		return false;
+	}
+
+	// Strip #fragment (display name hint) before parsing the URI
+	char* clean_uri = ska_strdup(uri_str);
+	char* hash = strchr(clean_uri, '#');
+	if (hash) *hash = '\0';
+
+	// Uri.parse(clean_uri)
+	jstring j_uri_str = (*env)->NewStringUTF(env, clean_uri);
+	ska_free(clean_uri);
+	jobject uri = (*env)->CallStaticObjectMethod(env,
+		g_jni_cache.uri_class, g_jni_cache.uri_parse, j_uri_str);
+	(*env)->DeleteLocalRef(env, j_uri_str);
+
+	// context.getContentResolver()
+	jobject resolver = (*env)->CallObjectMethod(env,
+		(jobject)g_ska.android_context, g_jni_cache.ctx_getContentResolver);
+
+	// resolver.openFileDescriptor(uri, "r")
+	jclass    resolver_class = (*env)->GetObjectClass(env, resolver);
+	jmethodID openFd         = (*env)->GetMethodID(env, resolver_class,
+		"openFileDescriptor",
+		"(Landroid/net/Uri;Ljava/lang/String;)Landroid/os/ParcelFileDescriptor;");
+	(*env)->DeleteLocalRef(env, resolver_class);
+	jstring mode = (*env)->NewStringUTF(env, "r");
+	jobject pfd  = (*env)->CallObjectMethod(env, resolver, openFd, uri, mode);
+	(*env)->DeleteLocalRef(env, mode);
+	(*env)->DeleteLocalRef(env, uri);
+	(*env)->DeleteLocalRef(env, resolver);
+
+	if (!pfd || (*env)->ExceptionCheck(env)) {
+		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+		ska_set_error("ska_android_content_read: Failed to open '%s'", uri_str);
+		if (pfd) (*env)->DeleteLocalRef(env, pfd);
+		return false;
+	}
+
+	// pfd.detachFd() — transfers ownership of the fd to us
+	jclass    pfd_class = (*env)->GetObjectClass(env, pfd);
+	jmethodID detachFd  = (*env)->GetMethodID(env, pfd_class, "detachFd", "()I");
+	int       fd        = (*env)->CallIntMethod(env, pfd, detachFd);
+	(*env)->DeleteLocalRef(env, pfd_class);
+	(*env)->DeleteLocalRef(env, pfd);
+
+	// Read via standard C I/O
+	FILE* file = fdopen(fd, "rb");
+	if (!file) {
+		ska_set_error("ska_android_content_read: fdopen failed for '%s'", uri_str);
+		close(fd);
+		return false;
+	}
+
+	// Get size — SAF file descriptors are seekable
+	fseek(file, 0, SEEK_END);
+	long file_size = ftell(file);
+	fseek(file, 0, SEEK_SET);
+
+	if (file_size <= 0) {
+		ska_set_error("ska_android_content_read: Failed to get size for '%s'", uri_str);
+		fclose(file);
+		return false;
+	}
+
+	void* data = ska_malloc((size_t)file_size);
+	if (!data) {
+		ska_set_error("ska_android_content_read: Failed to allocate %ld bytes", file_size);
+		fclose(file);
+		return false;
+	}
+
+	size_t bytes_read = fread(data, 1, (size_t)file_size, file);
+	fclose(file);
+
+	if (bytes_read != (size_t)file_size) {
+		ska_set_error("ska_android_content_read: Read %zu bytes, expected %ld", bytes_read, file_size);
+		ska_free(data);
+		return false;
+	}
+
+	*out_data = data;
+	if (out_size) *out_size = (size_t)file_size;
+	return true;
+}
+
+// ============================================================================
 // File Dialog
 // ============================================================================
 
@@ -1649,7 +1764,10 @@ static struct {
 	jclass    pm_class;
 	jmethodID pm_queryIntentActivities;
 	jmethodID activity_getPackageManager;
-	jmethodID activity_startActivityForResult;
+	// SkAppResultFragment (headless fragment for receiving activity results)
+	jclass    fragment_class;
+	jmethodID fragment_launch;
+	bool      fragment_available;
 	bool      initialized;
 } g_file_dialog_jni = {0};
 
@@ -1661,6 +1779,8 @@ typedef struct {
 } ska_android_file_dialog_t;
 
 static ska_android_file_dialog_t g_android_file_dialog = {0};
+
+static void JNICALL ska_native_on_activity_result(JNIEnv*, jclass, jint, jint, jobjectArray);
 
 static void ska_file_dialog_jni_init(void) {
 	if (g_file_dialog_jni.initialized) return;
@@ -1675,16 +1795,68 @@ static void ska_file_dialog_jni_init(void) {
 	g_file_dialog_jni.intent_setType = (*env)->GetMethodID(env, intent_class, "setType", "(Ljava/lang/String;)Landroid/content/Intent;");
 	g_file_dialog_jni.intent_addCategory = (*env)->GetMethodID(env, intent_class, "addCategory", "(Ljava/lang/String;)Landroid/content/Intent;");
 	g_file_dialog_jni.intent_putExtra_bool = (*env)->GetMethodID(env, intent_class, "putExtra", "(Ljava/lang/String;Z)Landroid/content/Intent;");
+	(*env)->DeleteLocalRef(env, intent_class);
 
 	// PackageManager
 	jclass pm_class = (*env)->FindClass(env, "android/content/pm/PackageManager");
 	g_file_dialog_jni.pm_class = (*env)->NewGlobalRef(env, pm_class);
 	g_file_dialog_jni.pm_queryIntentActivities = (*env)->GetMethodID(env, pm_class, "queryIntentActivities", "(Landroid/content/Intent;I)Ljava/util/List;");
+	(*env)->DeleteLocalRef(env, pm_class);
 
 	// Activity methods
 	jclass activity_class = (*env)->FindClass(env, "android/app/Activity");
 	g_file_dialog_jni.activity_getPackageManager = (*env)->GetMethodID(env, activity_class, "getPackageManager", "()Landroid/content/pm/PackageManager;");
-	g_file_dialog_jni.activity_startActivityForResult = (*env)->GetMethodID(env, activity_class, "startActivityForResult", "(Landroid/content/Intent;I)V");
+
+	// SkAppResultFragment — generic headless fragment that intercepts
+	// onActivityResult. Works with any Activity, no SkAppActivity required.
+	//
+	// FindClass uses the system class loader on native threads, which can't
+	// find app classes. Use the Activity's class loader instead.
+	g_file_dialog_jni.fragment_available = false;
+	if (g_ska.android_context) {
+		jmethodID getClassLoader = (*env)->GetMethodID(env, activity_class,
+			"getClassLoader", "()Ljava/lang/ClassLoader;");
+		jobject class_loader = (*env)->CallObjectMethod(env,
+			(jobject)g_ska.android_context, getClassLoader);
+
+		if (class_loader) {
+			jclass loader_class = (*env)->GetObjectClass(env, class_loader);
+			jmethodID loadClass = (*env)->GetMethodID(env, loader_class,
+				"loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+			(*env)->DeleteLocalRef(env, loader_class);
+
+			jstring class_name = (*env)->NewStringUTF(env,
+				"net.stereokit.sk_app.SkAppResultFragment");
+			jclass fragment_class = (jclass)(*env)->CallObjectMethod(env,
+				class_loader, loadClass, class_name);
+			(*env)->DeleteLocalRef(env, class_name);
+
+			if (fragment_class && !(*env)->ExceptionCheck(env)) {
+				g_file_dialog_jni.fragment_class = (*env)->NewGlobalRef(env, fragment_class);
+				g_file_dialog_jni.fragment_launch = (*env)->GetStaticMethodID(env,
+					fragment_class, "launch",
+					"(Landroid/app/Activity;ILandroid/content/Intent;)V");
+
+				// Register native callback so JVM can find it even when the
+				// library was loaded via dlopen rather than System.loadLibrary.
+				static const JNINativeMethod methods[] = {{
+					"nativeOnActivityResult", "(II[Ljava/lang/String;)V",
+					(void*)ska_native_on_activity_result
+				}};
+				(*env)->RegisterNatives(env, fragment_class, methods, 1);
+
+				g_file_dialog_jni.fragment_available = true;
+			} else {
+				if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+				ska_log(ska_log_warn, "SkAppResultFragment not found — "
+					"file dialogs require sk_app Java classes");
+			}
+			if (fragment_class) (*env)->DeleteLocalRef(env, fragment_class);
+
+			(*env)->DeleteLocalRef(env, class_loader);
+		}
+	}
+	(*env)->DeleteLocalRef(env, activity_class);
 
 	g_file_dialog_jni.initialized = true;
 }
@@ -1764,12 +1936,9 @@ bool ska_platform_file_dialog_available(ska_file_dialog_ type) {
 }
 
 bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialog_request_t* request) {
-	// Launch file picker using startActivityForResult.
-	// The result is received in SkAppActivity.onActivityResult() which calls
-	// our JNI callback nativeOnFileDialogResult().
-	//
-	// IMPORTANT: This requires the app to use SkAppActivity instead of NativeActivity
-	// in AndroidManifest.xml. See AndroidFileDialog.cmake for setup instructions.
+	// Launch file picker via SkAppResultFragment (headless fragment that
+	// receives onActivityResult and forwards it to native code). Works with
+	// any Activity — no SkAppActivity subclass required.
 
 	if (g_android_file_dialog.active) {
 		ska_set_error("File dialog already active");
@@ -1780,6 +1949,11 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
 	if (!env || !g_file_dialog_jni.initialized) {
 		ska_set_error("JNI not initialized for file dialog");
+		return false;
+	}
+
+	if (!g_file_dialog_jni.fragment_available) {
+		ska_set_error("SkAppResultFragment not available — cannot show file dialog");
 		return false;
 	}
 
@@ -1847,13 +2021,11 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 	g_android_file_dialog.title = request->title ? ska_strdup(request->title) : NULL;
 	g_android_file_dialog.active = true;
 
-	// Launch the activity with result
-	// Request code encodes our dialog ID with a marker (0x5B00 prefix)
-	// Lower byte is the dialog ID (0-255), upper byte is the marker
-	int request_code = 0x5B00 | (id & 0xFF);
-
+	// Launch via headless SkAppResultFragment
+	jint request_id = 0x5B00 | (id & 0xFF);
 	jobject activity = (jobject)g_ska.android_context;
-	(*env)->CallVoidMethod(env, activity, g_file_dialog_jni.activity_startActivityForResult, intent, request_code);
+	(*env)->CallStaticVoidMethod(env, g_file_dialog_jni.fragment_class,
+		g_file_dialog_jni.fragment_launch, activity, request_id, intent);
 	(*env)->DeleteLocalRef(env, intent);
 
 	// Check for exception
@@ -1882,22 +2054,15 @@ static void ska_android_check_file_dialog(void) {
 }
 
 // ============================================================================
-// JNI Callback for File Dialog Results (called from SkAppActivity.java)
+// JNI Callbacks for Activity Results
 // ============================================================================
+// Note: underscore in package name "sk_app" is escaped as "_1" in JNI.
 
-// JNI function name: Java_net_stereokit_sk_1app_SkAppActivity_nativeOnFileDialogResult
-// Note: underscore in package name "sk_app" is escaped as "_1" in JNI
-JNIEXPORT void JNICALL
-Java_net_stereokit_sk_1app_SkAppActivity_nativeOnFileDialogResult(
-	JNIEnv* env,
-	jclass clazz,
-	jint dialog_id,
-	jobjectArray uris,
-	jboolean cancelled
-) {
-	(void)clazz;
-
-	ska_log(ska_log_info, "JNI callback: dialog_id=%d, cancelled=%d", dialog_id, cancelled);
+// File dialog result handler (request IDs with 0x5B00 prefix)
+static void ska_android_file_dialog_handle_result(
+	JNIEnv* env, jint dialog_id, jobjectArray uris, jboolean cancelled)
+{
+	ska_log(ska_log_info, "File dialog result: dialog_id=%d, cancelled=%d", dialog_id, cancelled);
 
 	// Find the pending result for this dialog
 	ska_file_dialog_result_t* result = NULL;
@@ -1913,21 +2078,97 @@ Java_net_stereokit_sk_1app_SkAppActivity_nativeOnFileDialogResult(
 		return;
 	}
 
-	// Process URIs if not cancelled
+	// Process URIs if not cancelled. For content:// URIs, query the display
+	// name and append it as a fragment (content://...#filename.ext) so callers
+	// can detect the file type from the extension.
 	if (!cancelled && uris != NULL) {
-		jsize uri_count = (*env)->GetArrayLength(env, uris);
+		// Set up JNI refs for display name query
+		jobject   resolver   = (*env)->CallObjectMethod(env,
+			(jobject)g_ska.android_context, g_jni_cache.ctx_getContentResolver);
+		jclass    cr_class   = (*env)->GetObjectClass(env, resolver);
+		jmethodID cr_query   = (*env)->GetMethodID(env, cr_class, "query",
+			"(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;"
+			"[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;");
+		(*env)->DeleteLocalRef(env, cr_class);
+		jclass    cursor_cls = (*env)->FindClass(env, "android/database/Cursor");
+		jmethodID cur_move   = (*env)->GetMethodID(env, cursor_cls, "moveToFirst", "()Z");
+		jmethodID cur_getIdx = (*env)->GetMethodID(env, cursor_cls, "getColumnIndex",
+			"(Ljava/lang/String;)I");
+		jmethodID cur_getStr = (*env)->GetMethodID(env, cursor_cls, "getString",
+			"(I)Ljava/lang/String;");
+		jmethodID cur_close  = (*env)->GetMethodID(env, cursor_cls, "close", "()V");
+		(*env)->DeleteLocalRef(env, cursor_cls);
 
+		jstring col_name = (*env)->NewStringUTF(env, "_display_name");
+		jclass  string_cls = (*env)->FindClass(env, "java/lang/String");
+		jobjectArray projection = (*env)->NewObjectArray(env, 1, string_cls, col_name);
+		(*env)->DeleteLocalRef(env, string_cls);
+
+		jsize uri_count = (*env)->GetArrayLength(env, uris);
 		for (jsize i = 0; i < uri_count; i++) {
 			jstring uri_jstr = (jstring)(*env)->GetObjectArrayElement(env, uris, i);
-			if (uri_jstr) {
-				const char* uri_utf = (*env)->GetStringUTFChars(env, uri_jstr, NULL);
-				if (uri_utf) {
-					ska_file_dialog_result_add_path(result, uri_utf);
-					(*env)->ReleaseStringUTFChars(env, uri_jstr, uri_utf);
+			if (!uri_jstr) continue;
+
+			const char* uri_utf = (*env)->GetStringUTFChars(env, uri_jstr, NULL);
+			if (!uri_utf) { (*env)->DeleteLocalRef(env, uri_jstr); continue; }
+
+			// Query display name for content:// URIs
+			char* path = NULL;
+			if (strncmp(uri_utf, "content://", 10) == 0) {
+				jobject parsed = (*env)->CallStaticObjectMethod(env,
+					g_jni_cache.uri_class, g_jni_cache.uri_parse, uri_jstr);
+
+				if (!parsed || (*env)->ExceptionCheck(env)) {
+					if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+					if (parsed) (*env)->DeleteLocalRef(env, parsed);
+					goto add_path;
 				}
-				(*env)->DeleteLocalRef(env, uri_jstr);
+
+				jobject cursor = (*env)->CallObjectMethod(env, resolver, cr_query,
+					parsed, projection, NULL, NULL, NULL);
+
+				if (cursor && !(*env)->ExceptionCheck(env)) {
+					if ((*env)->CallBooleanMethod(env, cursor, cur_move)) {
+						jint col = (*env)->CallIntMethod(env, cursor, cur_getIdx, col_name);
+						if (col >= 0) {
+							jstring name_jstr = (jstring)(*env)->CallObjectMethod(env, cursor, cur_getStr, col);
+							if (name_jstr) {
+								const char* name = (*env)->GetStringUTFChars(env, name_jstr, NULL);
+								if (name) {
+									// content://provider/doc/id#display_name.ext
+									size_t uri_len  = strlen(uri_utf);
+									size_t name_len = strlen(name);
+									path = (char*)ska_malloc(uri_len + 1 + name_len + 1);
+									if (path) {
+										memcpy(path, uri_utf, uri_len);
+										path[uri_len] = '#';
+										memcpy(path + uri_len + 1, name, name_len + 1);
+									}
+									(*env)->ReleaseStringUTFChars(env, name_jstr, name);
+								}
+								(*env)->DeleteLocalRef(env, name_jstr);
+							}
+						}
+					}
+					(*env)->CallVoidMethod(env, cursor, cur_close);
+					(*env)->DeleteLocalRef(env, cursor);
+				} else {
+					if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+				}
+				(*env)->DeleteLocalRef(env, parsed);
 			}
+
+		add_path:
+			ska_file_dialog_result_add_path(result, path ? path : uri_utf);
+			if (path) ska_free(path);
+
+			(*env)->ReleaseStringUTFChars(env, uri_jstr, uri_utf);
+			(*env)->DeleteLocalRef(env, uri_jstr);
 		}
+
+		(*env)->DeleteLocalRef(env, col_name);
+		(*env)->DeleteLocalRef(env, projection);
+		(*env)->DeleteLocalRef(env, resolver);
 	}
 
 	// Mark complete and post event
@@ -1942,6 +2183,35 @@ Java_net_stereokit_sk_1app_SkAppActivity_nativeOnFileDialogResult(
 
 	ska_log(ska_log_info, "File dialog completed: %d paths, cancelled=%d",
 		result->path_count, result->cancelled);
+}
+
+// Dispatch activity result based on request ID prefix.
+// RESULT_OK = -1 on Android.
+static void ska_android_dispatch_activity_result(
+	JNIEnv* env, jint request_id, jint result_code, jobjectArray uris)
+{
+	// File dialog: 0x5B00 prefix
+	if ((request_id & 0xFF00) == 0x5B00) {
+		jint dialog_id = request_id & 0xFF;
+		jboolean cancelled = (result_code != -1);
+		ska_android_file_dialog_handle_result(env, dialog_id, uris, cancelled);
+		return;
+	}
+
+	ska_log(ska_log_warn, "Unhandled activity result: request_id=0x%04x, result=%d",
+		request_id, result_code);
+}
+
+// Called from SkAppResultFragment (generic headless fragment). Forward-declared
+// so RegisterNatives can bind it during init — required when the library is
+// loaded via dlopen (e.g. .NET Android P/Invoke) rather than
+// System.loadLibrary.
+static void JNICALL
+ska_native_on_activity_result(
+	JNIEnv* env, jclass clazz, jint request_id, jint result_code, jobjectArray uris)
+{
+	(void)clazz;
+	ska_android_dispatch_activity_result(env, request_id, result_code, uris);
 }
 
 // ============================================================================

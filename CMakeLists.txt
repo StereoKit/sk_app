@@ -122,6 +122,34 @@ elseif(ANDROID)
 	# Include Android APK build function
 	include(${CMAKE_CURRENT_SOURCE_DIR}/android/AndroidAPK.cmake)
 
+	# Build sk_app.jar — pre-compiled Java classes for library-mode consumers
+	# (e.g. StereoKit NuGet). Standalone apps use apk_add_java_sources() instead.
+	find_program(JAR NAMES jar REQUIRED PATHS ${JAVA_HOME_BIN})
+
+	set(SKA_JAR_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/jar_sk_app")
+	set(SKA_JAR_OUTPUT    "${CMAKE_CURRENT_BINARY_DIR}/sk_app.jar")
+	set(SKA_ANDROID_JAR   "${ANDROID_SDK_ROOT}/platforms/android-32/android.jar")
+	set(SKA_JAVA_DIR      "${CMAKE_CURRENT_SOURCE_DIR}/android/java")
+	set(SKA_JAVA_SOURCES
+		${SKA_JAVA_DIR}/net/stereokit/sk_app/SkAppActivity.java
+		${SKA_JAVA_DIR}/net/stereokit/sk_app/SkAppResultFragment.java
+	)
+
+	add_custom_command(
+		OUTPUT  ${SKA_JAR_OUTPUT}
+		DEPENDS ${SKA_JAVA_SOURCES}
+		COMMAND ${CMAKE_COMMAND} -E make_directory ${SKA_JAR_BUILD_DIR}
+		COMMAND ${JAVAC}
+			-source 1.8 -target 1.8
+			-bootclasspath ${SKA_ANDROID_JAR}
+			-d ${SKA_JAR_BUILD_DIR}
+			${SKA_JAVA_SOURCES}
+		COMMAND ${JAR} cf ${SKA_JAR_OUTPUT} -C ${SKA_JAR_BUILD_DIR} .
+		COMMENT "Building sk_app.jar"
+		VERBATIM
+	)
+	add_custom_target(sk_app_jar ALL DEPENDS ${SKA_JAR_OUTPUT})
+
 elseif(APPLE)
 	set(SKA_PLATFORM "MACOS")
 	target_compile_definitions(sk_app PRIVATE SKA_PLATFORM_MACOS)

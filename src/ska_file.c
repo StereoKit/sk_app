@@ -43,6 +43,12 @@ SKA_API bool ska_file_read(const char* filename, void** out_data, size_t* out_si
 		return false;
 	}
 
+#ifdef SKA_PLATFORM_ANDROID
+	// content:// URIs from file pickers must go through ContentResolver
+	if (strncmp(filename, "content://", 10) == 0)
+		return ska_android_content_read(filename, out_data, out_size);
+#endif
+
 #ifdef SKA_PLATFORM_WIN32
 	wchar_t* wfilename = ska_utf8_to_wide(filename);
 	if (!wfilename) {
@@ -185,6 +191,12 @@ SKA_API bool ska_file_exists(const char* filename) {
 	if (!filename) {
 		return false;
 	}
+
+#ifdef SKA_PLATFORM_ANDROID
+	// content:// URIs can't be checked via access(), but if we have one, it
+	// came from a picker or API and should be treated as existing.
+	if (strncmp(filename, "content://", 10) == 0) return true;
+#endif
 
 #ifdef SKA_PLATFORM_WIN32
 	// Windows: use _waccess for Unicode support

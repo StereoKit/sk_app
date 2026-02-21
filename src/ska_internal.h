@@ -404,4 +404,10 @@ char* ska_wide_to_utf8(const wchar_t* wide);
 void ska_free_string(void* str);
 #endif
 
+#ifdef SKA_PLATFORM_ANDROID
+// Read a content:// URI via ContentResolver. Returns the file data in the same
+// format as ska_file_read.
+bool ska_android_content_read(const char* uri, void** out_data, size_t* out_size);
+#endif
+
 #endif // SKA_INTERNAL_H
