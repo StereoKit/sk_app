@@ -755,32 +755,73 @@ SKA_API void* ska_linux_get_wayland_display(void);
 #endif
 
 #ifdef SKA_PLATFORM_ANDROID
-// Set Android app pointer.
-// Stores the android_app pointer needed for native window access and event handling.
-//
-// NOTE: You typically do NOT need to call this function!
-// The library automatically provides android_main() and sets up the app pointer.
-// You just write a standard main(int argc, char** argv) like on desktop.
-//
-// This function is only needed if you're providing your own android_main()
-// for advanced use cases.
+// Set Android app pointer (standalone mode).
+// Links the android_native_app_glue struct for native window and event handling.
+// Called automatically by sk_app_entrypoint; you only call this if providing
+// your own android_main().
 //
 // @param app android_app* from android_native_app_glue (cast to void*)
 SKA_API void ska_android_set_app(void* app);
 
-// Get the JavaVM pointer for JNI operations.
-// Required for attaching/detaching threads and obtaining JNIEnv.
-// Available from the start of main(), before ska_init() is called.
+// Set Android Context for JNI operations (library mode).
+// Accepts any Context subclass: Activity, Service, Application, etc.
+// In standalone mode this is called automatically from the glue Activity.
+// In library mode the host must call this before ska_init().
 //
-// @return JavaVM* (cast to void*), or NULL if android_app not set
+// @param context jobject for any android.content.Context (cast to void*)
+SKA_API void ska_android_set_context(void* context);
+
+// Get the JavaVM pointer for JNI operations.
+// Uses JNI_GetCreatedJavaVMs() internally — works in both standalone and library mode.
+//
+// @return JavaVM* (cast to void*), or NULL if no JVM
 SKA_API void* ska_android_get_vm(void);
 
-// Get the NativeActivity jobject for JNI calls.
-// This is the Activity instance that can be used with JNI to call Java methods.
-// Available from the start of main(), before ska_init() is called.
+// Get the stored Context jobject.
+// Returns whatever was passed to ska_android_set_context() (or the NativeActivity
+// in standalone mode). Usable for JNI calls to Java APIs.
 //
-// @return jobject (cast to void*) for the NativeActivity, or NULL if android_app not set
+// @return jobject (cast to void*), or NULL if not set
 SKA_API void* ska_android_get_activity(void);
+
+// Get a JNIEnv* for the calling thread.
+// Calls AttachCurrentThread internally (no-op if already attached).
+//
+// @return JNIEnv* (cast to void*), or NULL
+SKA_API void* ska_android_get_jni_env(void);
+
+// ---- Lifecycle / Input Injection (library mode) ----
+// These functions let an external host (C#, Java, etc.) push Android lifecycle
+// and input events into sk_app's event queue. In standalone mode the glue
+// callbacks call these internally.
+
+typedef enum ska_android_event_ {
+	ska_android_event_resume,
+	ska_android_event_pause,
+	ska_android_event_destroy,
+	ska_android_event_focus_gained,
+	ska_android_event_focus_lost,
+	ska_android_event_low_memory,
+} ska_android_event_;
+
+// Push a lifecycle event.
+SKA_API void ska_android_on_event(ska_android_event_ event);
+
+// Notify that the native window has been created. Triggers ska_event_window_shown.
+// @param native_window ANativeWindow* (cast to void*)
+SKA_API void ska_android_on_window_created(void *native_window);
+
+// Notify that the native window has been destroyed. Triggers ska_event_window_hidden.
+SKA_API void ska_android_on_window_destroyed(void);
+
+// Notify that the window has been resized (freeform / DEX mode).
+SKA_API void ska_android_on_window_resized(int32_t width, int32_t height);
+
+// Push a Java MotionEvent or KeyEvent into the input queue.
+// Extracts action/coordinates/keycode internally via JNI.
+// @param java_input_event jobject for MotionEvent or KeyEvent (cast to void*)
+// @return true if the event was consumed
+SKA_API bool ska_android_on_input(void *java_input_event);
 #endif
 
 // ============================================================================

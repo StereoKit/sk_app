@@ -276,6 +276,9 @@ typedef struct ska_state_t {
 
 #ifdef SKA_PLATFORM_ANDROID
 	struct android_app* android_app;
+	void* android_context;  // jobject global ref — any Context (Activity, Service, etc.)
+	void* java_vm;          // JavaVM*, cached at init
+	void* asset_manager;    // AAssetManager*, extracted from android_app or Context
 	bool app_has_focus;
 	bool app_is_visible;
 #endif

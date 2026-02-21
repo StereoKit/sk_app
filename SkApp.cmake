@@ -134,7 +134,8 @@ function(add_skapp SKA_TARGET)
 			list(APPEND APK_ARGS LIB_NAME ${SKA_LIB_NAME})
 		endif()
 
-		add_apk(${SKA_TARGET} ${APK_ARGS})
+		add_apk(${SKA_TARGET} ${APK_ARGS} SKIP_ENTRYPOINT)
+		target_link_libraries(${SKA_TARGET} PRIVATE -Wl,--whole-archive sk_app_entrypoint -Wl,--no-whole-archive)
 		add_dependencies(${SKA_TARGET}-apk ${SKA_TARGET}-package)
 
 		apk_add_java_sources(${SKA_TARGET} "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/android/java"

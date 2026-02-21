@@ -188,22 +188,12 @@ SKA_API bool ska_init(const ska_settings_t* opt_settings) {
 		g_ska_allocator.user_data = NULL;
 	}
 
-#ifdef SKA_PLATFORM_ANDROID
-	// Preserve android_app pointer that was set in android_main()
-	struct android_app* saved_android_app = g_ska.android_app;
-#endif
-
 	memset(&g_ska, 0, sizeof(g_ska));
 #ifdef SKA_PLATFORM_WIN32
 	QueryPerformanceFrequency(&g_qpc_frequency);
 #endif
 	g_ska.start_time = ska_get_time_ns();
 	g_ska.next_window_id = 1;
-
-#ifdef SKA_PLATFORM_ANDROID
-	// Restore android_app pointer
-	g_ska.android_app = saved_android_app;
-#endif
 
 	ska_event_queue_init(&g_ska.event_queue);
 	ska_input_state_init(&g_ska.input_state);
@@ -965,8 +955,3 @@ SKA_API void* ska_linux_get_wayland_display(void) {
 }
 #endif
 
-#ifdef SKA_PLATFORM_ANDROID
-SKA_API void ska_android_set_app(void* app) {
-	g_ska.android_app = (struct android_app*)app;
-}
-#endif

@@ -270,7 +270,7 @@ endfunction()
 function(add_apk APK_TARGET)
 	# Parse remaining arguments
 	cmake_parse_arguments(APK
-		""  # Options (boolean flags)
+		"SKIP_ENTRYPOINT"  # Options (boolean flags)
 		"PACKAGE_NAME;APP_NAME;MIN_SDK;TARGET_SDK;MANIFEST;RESOURCES;ASSETS;ASSETS_STAMP;LIB_NAME;ACTIVITY"  # Single-value args
 		""  # Multi-value args
 		${ARGN}
@@ -339,9 +339,11 @@ function(add_apk APK_TARGET)
 	###########################################################################
 
 	target_link_libraries(${APK_TARGET} PRIVATE android log)
-	target_include_directories(${APK_TARGET} PUBLIC ${CMAKE_ANDROID_NDK}/sources/android/native_app_glue)
-	target_sources(${APK_TARGET} PRIVATE
-		${CMAKE_ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
+	if(NOT APK_SKIP_ENTRYPOINT)
+		target_include_directories(${APK_TARGET} PUBLIC ${CMAKE_ANDROID_NDK}/sources/android/native_app_glue)
+		target_sources(${APK_TARGET} PRIVATE
+			${CMAKE_ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
+	endif()
 
 	###########################################################################
 	## Get list of shared libraries to pack

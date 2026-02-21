@@ -34,14 +34,14 @@ endif()
 
 message(STATUS "Fetching sk_renderer...")
 
-# Disable sk_renderer's example app and shader compiler to avoid build complexity
+# Disable sk_renderer's example app to avoid build complexity (we use the shader compiler in other projects here)
 set(SKR_BUILD_EXAMPLES OFF CACHE BOOL "Disable sk_renderer examples" FORCE)
-set(SKR_BUILD_SKSHADERC OFF CACHE BOOL "Disable shader compilation" FORCE)
+set(SKR_BUILD_SKSHADERC ON CACHE BOOL "Disable shader compilation" FORCE)
 FetchContent_Declare(
 	sk_renderer
 	GIT_REPOSITORY https://github.com/StereoKit/sk_renderer.git
-	GIT_TAG        main
-	#GIT_SHALLOW   TRUE
+	GIT_TAG        ac7e975dba44ff25411c746c65770e5e0354b2ef
+	GIT_SHALLOW   TRUE
 )
 FetchContent_MakeAvailable(sk_renderer)
 target_link_libraries     (imgui_example PRIVATE sk_renderer)

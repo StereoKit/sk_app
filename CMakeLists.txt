@@ -96,16 +96,28 @@ elseif(ANDROID)
 	target_compile_definitions(sk_app PRIVATE SKA_PLATFORM_ANDROID)
 
 	# Android-specific sources
-	target_sources(sk_app PRIVATE
-		src/ska_android.c
-		${CMAKE_ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c
-	)
+	target_sources(sk_app PRIVATE src/ska_android.c)
 
-	# Android includes and libraries
+	# Glue header needed for struct android_app* type in both modes
 	target_include_directories(sk_app PRIVATE
 		${CMAKE_ANDROID_NDK}/sources/android/native_app_glue
 	)
 	target_link_libraries(sk_app PRIVATE android log)
+
+	# Standalone entry point target: provides android_main() and the glue.
+	# Standalone targets link both sk_app and sk_app_entrypoint.
+	# Library-mode targets (C#, etc.) link only sk_app.
+	add_library(sk_app_entrypoint STATIC
+		src/ska_android_entry.c
+		${CMAKE_ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c
+	)
+	target_include_directories(sk_app_entrypoint PRIVATE
+		${CMAKE_CURRENT_SOURCE_DIR}/src
+		${CMAKE_CURRENT_SOURCE_DIR}/include
+		${CMAKE_ANDROID_NDK}/sources/android/native_app_glue
+	)
+	target_compile_definitions(sk_app_entrypoint PRIVATE SKA_PLATFORM_ANDROID)
+	target_link_libraries(sk_app_entrypoint PRIVATE android log)
 
 	# Include Android APK build function
 	include(${CMAKE_CURRENT_SOURCE_DIR}/android/AndroidAPK.cmake)
