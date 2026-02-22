@@ -587,24 +587,24 @@ SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out
 		return false;
 	}
 
-	// Build path: try "assets/" first, then "Assets/"
+	// Build path: try "Assets/" first, then "assets/"
 	size_t name_len = strlen(asset_name);
-	char* path = (char*)ska_malloc(8 + name_len + 1);  // "assets/" or "Assets/" + name + null
+	char* path = (char*)ska_malloc(8 + name_len + 1);  // "Assets/" or "assets/" + name + null
 	if (!path) {
 		ska_set_error("ska_asset_read: Failed to allocate path buffer");
 		return false;
 	}
 
-	// Try "assets/" first
-	snprintf(path, 8 + name_len + 1, "assets/%s", asset_name);
+	// Try "Assets/" first
+	snprintf(path, 8 + name_len + 1, "Assets/%s", asset_name);
 	if (ska_file_exists(path)) {
 		bool result = ska_file_read(path, out_data, out_size);
 		ska_free(path);
 		return result;
 	}
 
-	// Try "Assets/" (common on some platforms)
-	snprintf(path, 8 + name_len + 1, "Assets/%s", asset_name);
+	// Try "assets/" as fallback
+	snprintf(path, 8 + name_len + 1, "assets/%s", asset_name);
 	if (ska_file_exists(path)) {
 		bool result = ska_file_read(path, out_data, out_size);
 		ska_free(path);

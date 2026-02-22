@@ -18,7 +18,7 @@
 # or other generated files - they'll be included in the final app package.
 #
 # On Android: Creates shared library + APK with SkAppActivity, assets packed in APK
-# On other platforms: Creates executable, assets copied to assets/ folder next to it
+# On other platforms: Creates executable, assets copied to Assets/ folder next to it
 
 # Add asset directories to be bundled with the app (always syncs to catch new files)
 function(target_skapp_assets SKA_TARGET)
@@ -81,7 +81,7 @@ function(add_skapp SKA_TARGET)
 		add_executable(${SKA_TARGET})
 
 		# Assets go directly to output folder (no staging needed)
-		set(SKA_ASSETS_DIR "$<TARGET_FILE_DIR:${SKA_TARGET}>/assets")
+		set(SKA_ASSETS_DIR "$<TARGET_FILE_DIR:${SKA_TARGET}>/Assets")
 		set_target_properties(${SKA_TARGET} PROPERTIES SKAPP_ASSETS_DIR "${SKA_ASSETS_DIR}")
 
 		# Package target ensures assets are synced (depends on main target for output dir)
