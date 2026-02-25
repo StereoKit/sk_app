@@ -60,6 +60,9 @@ static struct {
 	jclass      uri_class;
 	jmethodID   uri_parse;
 	jmethodID   ctx_getContentResolver;
+	// UI thread trampoline (SkAppActivity.skaRunOnUiThread)
+	jclass      ui_helper_class;
+	jmethodID   ui_helper_run;
 } g_jni_cache = {0};
 
 // ============================================================================
@@ -75,6 +78,75 @@ SKA_API void* ska_android_get_jni_env(void) {
 	JNIEnv *env = NULL;
 	(*vm)->AttachCurrentThread(vm, &env, NULL);
 	return env;
+}
+
+// FindClass uses the system class loader on native threads, which can't find
+// app classes. This helper uses the Activity's class loader instead. Returns
+// a local ref on success, NULL on failure (exception is cleared).
+static jclass ska_android_find_app_class(JNIEnv *env, const char *dotted_name) {
+	if (!g_ska.android_context) return NULL;
+
+	jclass    activity_class = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
+	jmethodID getClassLoader = (*env)->GetMethodID(env, activity_class, "getClassLoader", "()Ljava/lang/ClassLoader;");
+	jobject   class_loader   = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context, getClassLoader);
+	(*env)->DeleteLocalRef(env, activity_class);
+	if (!class_loader) return NULL;
+
+	jclass    loader_class = (*env)->GetObjectClass(env, class_loader);
+	jmethodID loadClass    = (*env)->GetMethodID(env, loader_class, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+	(*env)->DeleteLocalRef(env, loader_class);
+
+	jstring class_name = (*env)->NewStringUTF(env, dotted_name);
+	jclass  result     = (jclass)(*env)->CallObjectMethod(env, class_loader, loadClass, class_name);
+	(*env)->DeleteLocalRef(env, class_name);
+	(*env)->DeleteLocalRef(env, class_loader);
+
+	if (!result || (*env)->ExceptionCheck(env)) {
+		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+		if (result) (*env)->DeleteLocalRef(env, result);
+		return NULL;
+	}
+	return result;
+}
+
+// ============================================================================
+// UI-thread trampoline
+// ============================================================================
+// Many Android APIs (Window.setAttributes, InputMethodManager, etc.) must be
+// called from the main/UI thread. The native app thread posts work here via
+// SkAppActivity.skaRunOnUiThread(), which wraps the call in
+// Activity.runOnUiThread() and invokes nativeUiCallback on the UI thread.
+
+typedef struct {
+	void (*fn)(void*);
+	void *data;
+} ska_ui_callback_t;
+
+JNIEXPORT void JNICALL Java_net_stereokit_sk_app_SkAppActivity_nativeUiCallback(
+	JNIEnv* env, jclass cls, jlong callback_ptr)
+{
+	(void)env; (void)cls;
+	ska_ui_callback_t *cb = (ska_ui_callback_t*)(intptr_t)callback_ptr;
+	if (cb) {
+		cb->fn(cb->data);
+		ska_free(cb);
+	}
+}
+
+static void ska_android_run_on_ui_thread(void (*fn)(void*), void *data) {
+	JNIEnv *env = (JNIEnv*)ska_android_get_jni_env();
+	if (!env || !g_jni_cache.ui_helper_class || !g_ska.android_context) return;
+
+	ska_ui_callback_t *cb = (ska_ui_callback_t*)ska_malloc(sizeof(ska_ui_callback_t));
+	if (!cb) return;
+	cb->fn   = fn;
+	cb->data = data;
+
+	(*env)->CallStaticVoidMethod(env,
+		g_jni_cache.ui_helper_class,
+		g_jni_cache.ui_helper_run,
+		(jobject)g_ska.android_context,
+		(jlong)(intptr_t)cb);
 }
 
 SKA_API void ska_android_set_context(void *context) {
@@ -128,21 +200,39 @@ static void ska_jni_cache_init(void) {
 
 	// Content URI helpers — used by content_read and file dialog results
 	jclass uri_class = (*env)->FindClass(env, "android/net/Uri");
-	g_jni_cache.uri_class = (*env)->NewGlobalRef(env, uri_class);
-	g_jni_cache.uri_parse = (*env)->GetStaticMethodID(env, uri_class,
-		"parse", "(Ljava/lang/String;)Landroid/net/Uri;");
+	g_jni_cache.uri_class = (*env)->NewGlobalRef     (env, uri_class);
+	g_jni_cache.uri_parse = (*env)->GetStaticMethodID(env, uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
 	(*env)->DeleteLocalRef(env, uri_class);
 
 	jclass ctx_class = (*env)->FindClass(env, "android/content/Context");
-	g_jni_cache.ctx_getContentResolver = (*env)->GetMethodID(env, ctx_class,
-		"getContentResolver", "()Landroid/content/ContentResolver;");
+	g_jni_cache.ctx_getContentResolver = (*env)->GetMethodID(env, ctx_class, "getContentResolver", "()Landroid/content/ContentResolver;");
 	(*env)->DeleteLocalRef(env, ctx_class);
+
+	// UI-thread trampoline — SkAppActivity.skaRunOnUiThread()
+	jclass ui_class = ska_android_find_app_class(env, "net.stereokit.sk_app.SkAppActivity");
+	if (ui_class) {
+		g_jni_cache.ui_helper_class = (*env)->NewGlobalRef(env, ui_class);
+		g_jni_cache.ui_helper_run   = (*env)->GetStaticMethodID(env, ui_class,
+			"skaRunOnUiThread", "(Landroid/app/Activity;J)V");
+
+		// Register native callback so JVM can find it even when the
+		// library was loaded via dlopen rather than System.loadLibrary.
+		static const JNINativeMethod methods[] = {{
+			"nativeUiCallback", "(J)V",
+			(void*)Java_net_stereokit_sk_app_SkAppActivity_nativeUiCallback
+		}};
+		(*env)->RegisterNatives(env, ui_class, methods, 1);
+		(*env)->DeleteLocalRef(env, ui_class);
+	} else {
+		ska_log(ska_log_warn, "SkAppActivity not found — UI-thread dispatch unavailable");
+	}
 }
 
 static void ska_jni_cache_shutdown(void) {
-	if (g_jni_cache.uri_class) {
-		JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
-		if (env) (*env)->DeleteGlobalRef(env, g_jni_cache.uri_class);
+	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
+	if (env) {
+		if (g_jni_cache.uri_class)       (*env)->DeleteGlobalRef(env, g_jni_cache.uri_class);
+		if (g_jni_cache.ui_helper_class) (*env)->DeleteGlobalRef(env, g_jni_cache.ui_helper_class);
 	}
 	memset(&g_jni_cache, 0, sizeof(g_jni_cache));
 }
@@ -1021,57 +1111,59 @@ void ska_platform_window_set_title(ska_window_t* window, const char* title) {
 	window->title = ska_strdup(title);
 }
 
-void ska_platform_window_set_frame_position(ska_window_t* window, int32_t x, int32_t y) {
-	// In freeform/DEX mode, we can change window position via WindowManager.LayoutParams
-	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
-	if (!env || !g_ska.android_context) {
-		return;
-	}
+// Callback data for window layout changes dispatched to the UI thread.
+typedef struct {
+	int32_t a, b;     // x/y or w/h
+	jfieldID field_a; // lp_x or lp_width
+	jfieldID field_b; // lp_y or lp_height
+} ska_layout_change_t;
 
-	jobject jwindow = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context, g_jni_cache.activity_getWindow);
+static void ska_set_layout_params_cb(void *data) {
+	ska_layout_change_t *lc = (ska_layout_change_t*)data;
 
+	JNIEnv *env = (JNIEnv*)ska_android_get_jni_env();
+	if (!env || !g_ska.android_context) { ska_free(lc); return; }
+
+	jobject jwindow = (*env)->CallObjectMethod(env,
+		(jobject)g_ska.android_context, g_jni_cache.activity_getWindow);
 	if (jwindow) {
-		jobject layout_params = (*env)->CallObjectMethod(env, jwindow, g_jni_cache.window_getAttributes);
-
-		if (layout_params) {
-			(*env)->SetIntField(env, layout_params, g_jni_cache.lp_x, x);
-			(*env)->SetIntField(env, layout_params, g_jni_cache.lp_y, y);
-
-			(*env)->CallVoidMethod(env, jwindow, g_jni_cache.window_setAttributes, layout_params);
-
-			window->x = x;
-			window->y = y;
-
-			(*env)->DeleteLocalRef(env, layout_params);
+		jobject lp = (*env)->CallObjectMethod(env, jwindow,
+			g_jni_cache.window_getAttributes);
+		if (lp) {
+			(*env)->SetIntField(env, lp, lc->field_a, lc->a);
+			(*env)->SetIntField(env, lp, lc->field_b, lc->b);
+			(*env)->CallVoidMethod(env, jwindow,
+				g_jni_cache.window_setAttributes, lp);
+			(*env)->DeleteLocalRef(env, lp);
 		}
 		(*env)->DeleteLocalRef(env, jwindow);
 	}
+	ska_free(lc);
+}
+
+void ska_platform_window_set_frame_position(ska_window_t* window, int32_t x, int32_t y) {
+	// In freeform/DEX mode, change window position via WindowManager.LayoutParams.
+	// setAttributes must run on the UI thread.
+	ska_layout_change_t *lc = (ska_layout_change_t*)ska_malloc(sizeof(*lc));
+	if (!lc) return;
+	*lc = (ska_layout_change_t){ .a = x, .b = y,
+		.field_a = g_jni_cache.lp_x, .field_b = g_jni_cache.lp_y };
+	ska_android_run_on_ui_thread(ska_set_layout_params_cb, lc);
+
+	window->x = x;
+	window->y = y;
 }
 
 void ska_platform_window_set_frame_size(ska_window_t* window, int32_t w, int32_t h) {
-	// In freeform/DEX mode, we can change window size via WindowManager.LayoutParams
+	// In freeform/DEX mode, change window size via WindowManager.LayoutParams.
+	// setAttributes must run on the UI thread.
 	(void)window; // Size change reflected via APP_CMD_WINDOW_RESIZED callback
 
-	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
-	if (!env || !g_ska.android_context) {
-		return;
-	}
-
-	jobject jwindow = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context, g_jni_cache.activity_getWindow);
-
-	if (jwindow) {
-		jobject layout_params = (*env)->CallObjectMethod(env, jwindow, g_jni_cache.window_getAttributes);
-
-		if (layout_params) {
-			(*env)->SetIntField(env, layout_params, g_jni_cache.lp_width, w);
-			(*env)->SetIntField(env, layout_params, g_jni_cache.lp_height, h);
-
-			(*env)->CallVoidMethod(env, jwindow, g_jni_cache.window_setAttributes, layout_params);
-
-			(*env)->DeleteLocalRef(env, layout_params);
-		}
-		(*env)->DeleteLocalRef(env, jwindow);
-	}
+	ska_layout_change_t *lc = (ska_layout_change_t*)ska_malloc(sizeof(*lc));
+	if (!lc) return;
+	*lc = (ska_layout_change_t){ .a = w, .b = h,
+		.field_a = g_jni_cache.lp_width, .field_b = g_jni_cache.lp_height };
+	ska_android_run_on_ui_thread(ska_set_layout_params_cb, lc);
 }
 
 void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_left, int32_t* out_right, int32_t* out_top, int32_t* out_bottom) {
@@ -1809,52 +1901,27 @@ static void ska_file_dialog_jni_init(void) {
 
 	// SkAppResultFragment — generic headless fragment that intercepts
 	// onActivityResult. Works with any Activity, no SkAppActivity required.
-	//
-	// FindClass uses the system class loader on native threads, which can't
-	// find app classes. Use the Activity's class loader instead.
 	g_file_dialog_jni.fragment_available = false;
-	if (g_ska.android_context) {
-		jmethodID getClassLoader = (*env)->GetMethodID(env, activity_class,
-			"getClassLoader", "()Ljava/lang/ClassLoader;");
-		jobject class_loader = (*env)->CallObjectMethod(env,
-			(jobject)g_ska.android_context, getClassLoader);
+	jclass fragment_class = ska_android_find_app_class(env, "net.stereokit.sk_app.SkAppResultFragment");
+	if (fragment_class) {
+		g_file_dialog_jni.fragment_class = (*env)->NewGlobalRef(env, fragment_class);
+		g_file_dialog_jni.fragment_launch = (*env)->GetStaticMethodID(env,
+			fragment_class, "launch",
+			"(Landroid/app/Activity;ILandroid/content/Intent;)V");
 
-		if (class_loader) {
-			jclass loader_class = (*env)->GetObjectClass(env, class_loader);
-			jmethodID loadClass = (*env)->GetMethodID(env, loader_class,
-				"loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
-			(*env)->DeleteLocalRef(env, loader_class);
+		// Register native callback so JVM can find it even when the
+		// library was loaded via dlopen rather than System.loadLibrary.
+		static const JNINativeMethod methods[] = {{
+			"nativeOnActivityResult", "(II[Ljava/lang/String;)V",
+			(void*)ska_native_on_activity_result
+		}};
+		(*env)->RegisterNatives(env, fragment_class, methods, 1);
 
-			jstring class_name = (*env)->NewStringUTF(env,
-				"net.stereokit.sk_app.SkAppResultFragment");
-			jclass fragment_class = (jclass)(*env)->CallObjectMethod(env,
-				class_loader, loadClass, class_name);
-			(*env)->DeleteLocalRef(env, class_name);
-
-			if (fragment_class && !(*env)->ExceptionCheck(env)) {
-				g_file_dialog_jni.fragment_class = (*env)->NewGlobalRef(env, fragment_class);
-				g_file_dialog_jni.fragment_launch = (*env)->GetStaticMethodID(env,
-					fragment_class, "launch",
-					"(Landroid/app/Activity;ILandroid/content/Intent;)V");
-
-				// Register native callback so JVM can find it even when the
-				// library was loaded via dlopen rather than System.loadLibrary.
-				static const JNINativeMethod methods[] = {{
-					"nativeOnActivityResult", "(II[Ljava/lang/String;)V",
-					(void*)ska_native_on_activity_result
-				}};
-				(*env)->RegisterNatives(env, fragment_class, methods, 1);
-
-				g_file_dialog_jni.fragment_available = true;
-			} else {
-				if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-				ska_log(ska_log_warn, "SkAppResultFragment not found — "
-					"file dialogs require sk_app Java classes");
-			}
-			if (fragment_class) (*env)->DeleteLocalRef(env, fragment_class);
-
-			(*env)->DeleteLocalRef(env, class_loader);
-		}
+		g_file_dialog_jni.fragment_available = true;
+		(*env)->DeleteLocalRef(env, fragment_class);
+	} else {
+		ska_log(ska_log_warn, "SkAppResultFragment not found — "
+			"file dialogs require sk_app Java classes");
 	}
 	(*env)->DeleteLocalRef(env, activity_class);
 

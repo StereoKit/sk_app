@@ -189,7 +189,6 @@ function(_apk_build_dex APK_TARGET)
 		set(ANDROID_JAR "${ANDROID_SDK_ROOT}/platforms/android-32/android.jar")
 	endif()
 
-	set(DEX_INPUTS "")
 	set(DEX_DEPENDS "")
 
 	# Process Java sources if any, otherwise use Empty.class placeholder
@@ -233,19 +232,23 @@ function(_apk_build_dex APK_TARGET)
 			VERBATIM
 		)
 
-		list(APPEND DEX_INPUTS ${JAVA_CLASS_FILES})
 		list(APPEND DEX_DEPENDS ${JAVA_CLASS_FILES})
 	else()
 		# No Java sources provided, use Empty.class placeholder
-		set(DEX_INPUTS "${APK_BUILD_DIR}/obj/Empty.class")
 		set(DEX_DEPENDS "${APK_BUILD_DIR}/obj/Empty.class")
 	endif()
 
-	# Build classes.dex from all inputs
+	# Build classes.dex from all .class files (including inner classes).
+	# Uses a cmake -P script to glob at build time, since javac may produce
+	# inner-class files (e.g. Foo$1.class) not known at configure time.
 	add_custom_command(
 		OUTPUT ${APK_BUILD_DIR}/obj/classes.dex
 		DEPENDS ${DEX_DEPENDS}
-		COMMAND ${D8} --lib ${ANDROID_JAR} --release --output ${APK_BUILD_DIR}/obj ${DEX_INPUTS}
+		COMMAND ${CMAKE_COMMAND}
+			-DD8=${D8}
+			-DANDROID_JAR=${ANDROID_JAR}
+			-DCLASS_DIR=${APK_BUILD_DIR}/obj
+			-P ${_SK_APP_ANDROID_DIR}/build_dex.cmake
 		COMMENT "Building classes.dex for ${APK_TARGET}"
 		VERBATIM
 	)
