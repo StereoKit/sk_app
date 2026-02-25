@@ -66,6 +66,28 @@ function(target_skapp_assets SKA_TARGET)
 	set_target_properties(${SKA_TARGET} PROPERTIES SKAPP_ASSET_COUNT ${ASSET_COUNT})
 endfunction()
 
+# Link sk_app only if it isn't already embedded in an upstream shared library.
+# Called via cmake_language(DEFER ...) at end-of-directory so that all
+# target_link_libraries() calls in the caller's CMakeLists.txt are visible.
+# Avoids a duplicate static copy of g_ska when a dep like libStereoKitC.so
+# already links sk_app — two copies means one copy has an uninitialized g_ska.
+function(_skapp_link_sk_app SKA_TARGET)
+	get_target_property(link_libs ${SKA_TARGET} LINK_LIBRARIES)
+	if(link_libs)
+		foreach(dep ${link_libs})
+			if(TARGET ${dep})
+				get_target_property(dep_type  ${dep} TYPE)
+				get_target_property(dep_links ${dep} LINK_LIBRARIES)
+				if(dep_type STREQUAL "SHARED_LIBRARY" AND dep_links AND "sk_app" IN_LIST dep_links)
+					message(STATUS "sk_app: ${SKA_TARGET} skipping sk_app link (already in ${dep})")
+					return()
+				endif()
+			endif()
+		endforeach()
+	endif()
+	target_link_libraries(${SKA_TARGET} PRIVATE sk_app)
+endfunction()
+
 function(add_skapp SKA_TARGET)
 	cmake_parse_arguments(SKA "" "PACKAGE_NAME;APP_NAME;MIN_SDK;TARGET_SDK;MANIFEST;RESOURCES;LIB_NAME" "" ${ARGN})
 
@@ -150,8 +172,14 @@ function(add_skapp SKA_TARGET)
 		message(STATUS "  Activity: net.stereokit.sk_app.SkAppActivity")
 	endif()
 
-	# Link sk_app library
-	target_link_libraries(${SKA_TARGET} PRIVATE sk_app)
+	# Defer until end-of-directory so all target_link_libraries() calls are
+	# done. _skapp_link_sk_app will skip linking if a SHARED dep already
+	# embeds sk_app, preventing duplicate static copies with separate g_ska.
+	# Note: EVAL CODE is needed to capture SKA_TARGET by value (CMake DEFER quirk)
+	cmake_language(EVAL CODE "
+		cmake_language(DEFER
+			DIRECTORY [[${CMAKE_CURRENT_SOURCE_DIR}]]
+			CALL _skapp_link_sk_app [[${SKA_TARGET}]])")
 
 	# Export assets dir path to parent scope for convenience
 	set(${SKA_TARGET}_ASSETS_DIR "${SKA_ASSETS_DIR}" PARENT_SCOPE)
