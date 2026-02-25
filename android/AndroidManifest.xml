@@ -14,7 +14,8 @@
 		android:label="@string/app_name"
 		android:theme="@style/NativeActivityTheme"
 		android:supportsRtl="true"
-		android:hasCode="false">
+		android:hasCode="false"
+		android:debuggable="@ANDROID_DEBUGGABLE@">
 
 		<activity
 			android:name="android.app.NativeActivity"

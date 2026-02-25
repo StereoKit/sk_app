@@ -72,12 +72,21 @@ if (DEFINED JAVA_HOME)
 	cmake_path(APPEND JAVA_HOME_BIN ${JAVA_HOME} "bin")
 endif()
 
+if(NOT DEFINED ANDROID_DEBUGGABLE)
+	if(CMAKE_BUILD_TYPE AND CMAKE_BUILD_TYPE MATCHES "[Dd]ebug")
+		set(ANDROID_DEBUGGABLE true)
+	else()
+		set(ANDROID_DEBUGGABLE false)
+	endif()
+endif()
+
 message(STATUS "APK build var - ANDROID_SDK_ROOT         : ${ANDROID_SDK_ROOT}")
 message(STATUS "APK build var - CMAKE_ANDROID_NDK        : ${CMAKE_ANDROID_NDK}")
 message(STATUS "APK build var - ANDROID_BUILD_TOOLS_PATH : ${ANDROID_BUILD_TOOLS_PATH}")
 message(STATUS "APK build var - JAVA_HOME_BIN            : ${JAVA_HOME_BIN}")
 message(STATUS "APK build var - CMAKE_ANDROID_ARCH_ABI   : ${CMAKE_ANDROID_ARCH_ABI}")
 message(STATUS "APK build var - CMAKE_SYSTEM_VERSION     : ${CMAKE_SYSTEM_VERSION}")
+message(STATUS "APK build var - ANDROID_DEBUGGABLE       : ${ANDROID_DEBUGGABLE}")
 
 ###############################################################################
 ## Build tools

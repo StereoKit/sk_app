@@ -22,7 +22,8 @@
 		android:label="@string/app_name"
 		android:theme="@style/NativeActivityTheme"
 		android:supportsRtl="true"
-		android:hasCode="true">
+		android:hasCode="true"
+		android:debuggable="@ANDROID_DEBUGGABLE@">
 
 		<activity
 			android:name="net.stereokit.sk_app.SkAppActivity"
