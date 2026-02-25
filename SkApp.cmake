@@ -111,6 +111,8 @@ function(add_skapp SKA_TARGET)
 
 		if(NOT SKA_MANIFEST)
 			set(SKA_MANIFEST "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/android/AndroidManifest_SkApp.xml")
+		elseif(NOT IS_ABSOLUTE "${SKA_MANIFEST}")
+			set(SKA_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/${SKA_MANIFEST}")
 		endif()
 
 		set(APK_ARGS
