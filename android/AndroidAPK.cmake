@@ -252,6 +252,58 @@ function(_apk_build_dex APK_TARGET)
 endfunction()
 
 ###############################################################################
+## Internal: Collect shared library dependencies and assemble the final APK
+##
+## Called automatically at end of directory processing via cmake_language(DEFER)
+## so that all target_link_libraries() calls — including those made after
+## add_apk() returns — are visible when we inspect LINK_LIBRARIES.
+###############################################################################
+function(_apk_build_final APK_TARGET)
+	get_target_property(APK_BUILD_DIR ${APK_TARGET}-apk APK_BUILD_DIR)
+	get_target_property(OUTPUT_APK    ${APK_TARGET}-apk APK_OUTPUT_PATH)
+
+	set(APK_BASE      ${APK_BUILD_DIR}/${APK_TARGET}.1.base)
+	set(APK_UNALIGNED ${APK_BUILD_DIR}/${APK_TARGET}.2.unaligned)
+	set(APK_UNSIGNED  ${APK_BUILD_DIR}/${APK_TARGET}.3.unsigned)
+
+	# Read LINK_LIBRARIES now that all target_link_libraries() calls have
+	# completed (deferred to end of directory processing).
+	get_target_property(PROJECT_LIBRARIES ${APK_TARGET} LINK_LIBRARIES)
+	set(APK_SRC_LIBRARIES  $<TARGET_FILE:${APK_TARGET}>)
+	set(APK_COPY_LIBRARIES lib/${CMAKE_ANDROID_ARCH_ABI}/$<TARGET_FILE_NAME:${APK_TARGET}>)
+	if(PROJECT_LIBRARIES)
+		foreach(CURR ${PROJECT_LIBRARIES})
+			if(TARGET ${CURR})
+				get_target_property(CURR_TARGET_TYPE ${CURR} TYPE)
+				if(CURR_TARGET_TYPE STREQUAL "SHARED_LIBRARY")
+					list(APPEND APK_SRC_LIBRARIES  $<TARGET_FILE:${CURR}>)
+					list(APPEND APK_COPY_LIBRARIES lib/${CMAKE_ANDROID_ARCH_ABI}/$<TARGET_FILE_NAME:${CURR}>)
+				endif()
+			endif()
+		endforeach()
+	endif()
+
+	add_custom_command(
+		DEPENDS
+			${APK_TARGET}
+			${APK_BASE}
+		OUTPUT
+			${OUTPUT_APK}
+		COMMAND ${CMAKE_COMMAND} -E rm -f
+			${APK_UNALIGNED}
+			${APK_UNSIGNED}
+			${OUTPUT_APK}
+		COMMAND ${CMAKE_COMMAND} -E copy
+			${APK_SRC_LIBRARIES}
+			${APK_BUILD_DIR}/lib/${CMAKE_ANDROID_ARCH_ABI}/
+		COMMAND ${CMAKE_COMMAND} -E copy ${APK_BASE} ${APK_UNALIGNED}
+		COMMAND cd ${APK_BUILD_DIR} && ${AAPT} add ${APK_UNALIGNED} ${APK_COPY_LIBRARIES}
+		COMMAND ${ZIPALIGN} -p 4 ${APK_UNALIGNED} ${APK_UNSIGNED}
+		COMMAND ${APKSIGN} sign --ks ${KEYSTORE} --ks-key-alias ${KEY_ALIAS} --ks-pass pass:${KEYSTORE_PASS} --key-pass pass:${KEY_ALIAS_PASS} --out ${OUTPUT_APK} ${APK_UNSIGNED}
+		COMMENT "Building final APK: ${APK_TARGET}.apk")
+endfunction()
+
+###############################################################################
 ## add_apk: Create an APK build target from a shared library target
 ###############################################################################
 #
@@ -353,23 +405,6 @@ function(add_apk APK_TARGET)
 		target_sources(${APK_TARGET} PRIVATE
 			${CMAKE_ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c)
 	endif()
-
-	###########################################################################
-	## Get list of shared libraries to pack
-	###########################################################################
-
-	get_target_property(PROJECT_LIBRARIES ${APK_TARGET} LINK_LIBRARIES)
-	set(APK_SRC_LIBRARIES $<TARGET_FILE:${APK_TARGET}>)
-	set(APK_COPY_LIBRARIES lib/${CMAKE_ANDROID_ARCH_ABI}/$<TARGET_FILE_NAME:${APK_TARGET}>)
-	foreach(CURR ${PROJECT_LIBRARIES})
-		if (TARGET ${CURR})
-			get_target_property(CURR_TARGET_TYPE ${CURR} TYPE)
-			if(${CURR_TARGET_TYPE} STREQUAL "SHARED_LIBRARY")
-				list(APPEND APK_SRC_LIBRARIES $<TARGET_FILE:${CURR}>)
-				list(APPEND APK_COPY_LIBRARIES lib/${CMAKE_ANDROID_ARCH_ABI}/$<TARGET_FILE_NAME:${CURR}>)
-			endif()
-		endif()
-	endforeach()
 
 	###########################################################################
 	## Set up build directories and paths
@@ -481,29 +516,6 @@ function(add_apk APK_TARGET)
 		COMMENT "Building base APK for ${APK_TARGET}")
 
 	###########################################################################
-	## Assemble final APK (add native libraries, align, sign)
-	###########################################################################
-
-	add_custom_command(
-		DEPENDS
-			${APK_TARGET}
-			${APK_BASE}
-		OUTPUT
-			${OUTPUT_APK}
-		COMMAND ${CMAKE_COMMAND} -E rm -f
-			${APK_UNALIGNED}
-			${APK_UNSIGNED}
-			${OUTPUT_APK}
-		COMMAND ${CMAKE_COMMAND} -E copy
-			${APK_SRC_LIBRARIES}
-			${APK_BUILD_DIR}/lib/${CMAKE_ANDROID_ARCH_ABI}/
-		COMMAND ${CMAKE_COMMAND} -E copy ${APK_BASE} ${APK_UNALIGNED}
-		COMMAND cd ${APK_BUILD_DIR} && ${AAPT} add ${APK_UNALIGNED} ${APK_COPY_LIBRARIES}
-		COMMAND ${ZIPALIGN} -p 4 ${APK_UNALIGNED} ${APK_UNSIGNED}
-		COMMAND ${APKSIGN} sign --ks ${KEYSTORE} --ks-key-alias ${KEY_ALIAS} --ks-pass pass:${KEYSTORE_PASS} --key-pass pass:${KEY_ALIAS_PASS} --out ${OUTPUT_APK} ${APK_UNSIGNED}
-		COMMENT "Building final APK: ${APK_TARGET}.apk")
-
-	###########################################################################
 	## Create CMake targets
 	###########################################################################
 
@@ -544,5 +556,14 @@ function(add_apk APK_TARGET)
 			DIRECTORY [[${CMAKE_CURRENT_SOURCE_DIR}]]
 			ID _apk_dex_${APK_TARGET}
 			CALL _apk_build_dex [[${APK_TARGET}]])")
+
+	# Defer final APK assembly to end of directory processing so that all
+	# target_link_libraries() calls (including those made after add_apk() returns)
+	# are visible when we collect shared library dependencies.
+	cmake_language(EVAL CODE "
+		cmake_language(DEFER
+			DIRECTORY [[${CMAKE_CURRENT_SOURCE_DIR}]]
+			ID _apk_final_${APK_TARGET}
+			CALL _apk_build_final [[${APK_TARGET}]])")
 
 endfunction()
