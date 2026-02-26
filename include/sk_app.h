@@ -191,6 +191,7 @@ SKA_API const char* ska_window_get_title(const ska_window_t* window);
 // Set window frame position.
 // Positions the entire window including title bar and borders.
 // May not take effect immediately on some platforms (window managers can override).
+// No-op on Android when using a Service context (no window to position).
 //
 // @param ref_window Window handle
 // @param x New X position of frame's top-left corner in screen coordinates
@@ -208,6 +209,7 @@ SKA_API void ska_window_get_frame_position(const ska_window_t* window, int32_t* 
 // Set window frame size.
 // Sets the size of the entire window including title bar and borders.
 // Triggers ska_event_window_resized when content size actually changes.
+// No-op on Android when using a Service context (no window to resize).
 //
 // @param ref_window Window handle
 // @param width New width of entire frame in screen coordinates
@@ -296,7 +298,8 @@ SKA_API float ska_window_get_dpi_scale(const ska_window_t* window);
 // - Linux/X11: Uses XRandR to query the current CRTC refresh rate
 // - Win32: Uses EnumDisplaySettings on the monitor containing the window
 // - macOS: Uses CGDisplayModeGetRefreshRate on the window's screen
-// - Android: Uses JNI to call Display.getRefreshRate()
+// - Android: Uses JNI to call Display.getRefreshRate(). Returns 0 from a
+//   Service context (requires Activity for getWindowManager()).
 //
 // @param window Window handle
 // @return Refresh rate in Hz, or 0.0f if unavailable
@@ -867,6 +870,8 @@ typedef enum ska_text_input_type_ {
 
 // Show or hide virtual keyboard (mobile platforms).
 // On Android, hints to OS what keyboard layout to show (email, number pad, etc).
+// Requires an Activity context — no-op from an Android Service (no window for
+// keyboard focus).
 // On desktop (Linux X11, Win32, macOS), this is a no-op (always false).
 //
 // @param visible true to show, false to hide
@@ -1093,8 +1098,8 @@ typedef struct ska_file_dialog_request_t {
 
 // Check if file dialogs are available on this platform.
 // On desktop platforms, always returns true.
-// On Android, checks if a system file picker Activity is available.
-// Useful for XR headsets or AOSP variants that may lack standard Android features.
+// On Android, checks if a system file picker Activity is available. Returns
+// false from an Android Service context (file dialogs require an Activity).
 //
 // @param type Dialog type to check availability for
 // @return true if file dialogs of this type are supported, false otherwise
@@ -1108,7 +1113,8 @@ SKA_API bool ska_file_dialog_available(ska_file_dialog_ type);
 // - Linux X11: Uses zenity, kdialog, or xdg-desktop-portal (in order of preference)
 // - Win32: Uses IFileOpenDialog/IFileSaveDialog (Vista+ common item dialogs)
 // - macOS: Uses NSOpenPanel/NSSavePanel
-// - Android: Uses ACTION_OPEN_DOCUMENT/ACTION_CREATE_DOCUMENT intents via SAF
+// - Android: Uses ACTION_OPEN_DOCUMENT/ACTION_CREATE_DOCUMENT intents via SAF.
+//   Requires an Activity context — returns 0 from an Android Service.
 //
 // @param request Dialog configuration (required, not NULL)
 // @return Non-zero dialog ID on success, 0 on failure (check ska_error_get())

@@ -135,7 +135,8 @@ JNIEXPORT void JNICALL Java_net_stereokit_sk_app_SkAppActivity_nativeUiCallback(
 
 static void ska_android_run_on_ui_thread(void (*fn)(void*), void *data) {
 	JNIEnv *env = (JNIEnv*)ska_android_get_jni_env();
-	if (!env || !g_jni_cache.ui_helper_class || !g_ska.android_context) return;
+	// skaRunOnUiThread expects an Activity — skip for Service contexts
+	if (!env || !g_jni_cache.ui_helper_class || !g_ska.android_context || !g_ska.android_is_activity) return;
 
 	ska_ui_callback_t *cb = (ska_ui_callback_t*)ska_malloc(sizeof(ska_ui_callback_t));
 	if (!cb) return;
@@ -175,28 +176,44 @@ static void ska_jni_cache_init(void) {
 		return;
 	}
 
-	// Activity.getWindow() — uses GetObjectClass so it works with any Activity subclass
 	if (!g_ska.android_context) return;
-	jclass activity_class = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
-	g_jni_cache.activity_getWindow = (*env)->GetMethodID(env, activity_class, "getWindow", "()Landroid/view/Window;");
 
-	// Window methods
-	jclass window_class = (*env)->FindClass(env, "android/view/Window");
-	g_jni_cache.window_getAttributes = (*env)->GetMethodID(env, window_class, "getAttributes", "()Landroid/view/WindowManager$LayoutParams;");
-	g_jni_cache.window_setAttributes = (*env)->GetMethodID(env, window_class, "setAttributes", "(Landroid/view/WindowManager$LayoutParams;)V");
-	g_jni_cache.window_getDecorView  = (*env)->GetMethodID(env, window_class, "getDecorView", "()Landroid/view/View;");
+	// Detect whether the context is an Activity (has getWindow, UI thread,
+	// etc.) or a plain Context/Service (no window, no decor view).
+	jclass activity_base = (*env)->FindClass(env, "android/app/Activity");
+	g_ska.android_is_activity = activity_base &&
+		(*env)->IsInstanceOf(env, (jobject)g_ska.android_context, activity_base);
+	if (activity_base) (*env)->DeleteLocalRef(env, activity_base);
 
-	// View methods
-	jclass view_class = (*env)->FindClass(env, "android/view/View");
-	g_jni_cache.view_getWidth  = (*env)->GetMethodID(env, view_class, "getWidth", "()I");
-	g_jni_cache.view_getHeight = (*env)->GetMethodID(env, view_class, "getHeight", "()I");
+	if (g_ska.android_is_activity) {
+		// Activity.getWindow() — uses GetObjectClass so it works with any Activity subclass
+		jclass activity_class = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
+		g_jni_cache.activity_getWindow = (*env)->GetMethodID(env, activity_class, "getWindow", "()Landroid/view/Window;");
+		(*env)->DeleteLocalRef(env, activity_class);
 
-	// LayoutParams fields
-	jclass lp_class = (*env)->FindClass(env, "android/view/WindowManager$LayoutParams");
-	g_jni_cache.lp_x      = (*env)->GetFieldID(env, lp_class, "x", "I");
-	g_jni_cache.lp_y      = (*env)->GetFieldID(env, lp_class, "y", "I");
-	g_jni_cache.lp_width  = (*env)->GetFieldID(env, lp_class, "width", "I");
-	g_jni_cache.lp_height = (*env)->GetFieldID(env, lp_class, "height", "I");
+		// Window methods
+		jclass window_class = (*env)->FindClass(env, "android/view/Window");
+		g_jni_cache.window_getAttributes = (*env)->GetMethodID(env, window_class, "getAttributes", "()Landroid/view/WindowManager$LayoutParams;");
+		g_jni_cache.window_setAttributes = (*env)->GetMethodID(env, window_class, "setAttributes", "(Landroid/view/WindowManager$LayoutParams;)V");
+		g_jni_cache.window_getDecorView  = (*env)->GetMethodID(env, window_class, "getDecorView", "()Landroid/view/View;");
+		(*env)->DeleteLocalRef(env, window_class);
+
+		// View methods
+		jclass view_class = (*env)->FindClass(env, "android/view/View");
+		g_jni_cache.view_getWidth  = (*env)->GetMethodID(env, view_class, "getWidth", "()I");
+		g_jni_cache.view_getHeight = (*env)->GetMethodID(env, view_class, "getHeight", "()I");
+		(*env)->DeleteLocalRef(env, view_class);
+
+		// LayoutParams fields
+		jclass lp_class = (*env)->FindClass(env, "android/view/WindowManager$LayoutParams");
+		g_jni_cache.lp_x      = (*env)->GetFieldID(env, lp_class, "x", "I");
+		g_jni_cache.lp_y      = (*env)->GetFieldID(env, lp_class, "y", "I");
+		g_jni_cache.lp_width  = (*env)->GetFieldID(env, lp_class, "width", "I");
+		g_jni_cache.lp_height = (*env)->GetFieldID(env, lp_class, "height", "I");
+		(*env)->DeleteLocalRef(env, lp_class);
+	} else {
+		ska_log(ska_log_info, "Context is not an Activity — window management unavailable");
+	}
 
 	// Content URI helpers — used by content_read and file dialog results
 	jclass uri_class = (*env)->FindClass(env, "android/net/Uri");
@@ -248,7 +265,7 @@ static void ska_android_get_window_position(ska_window_t* window) {
 		return;
 	}
 
-	if (!g_ska.android_context) return;
+	if (!g_ska.android_context || !g_ska.android_is_activity) return;
 
 	jobject jwindow = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context, g_jni_cache.activity_getWindow);
 
@@ -1122,7 +1139,7 @@ static void ska_set_layout_params_cb(void *data) {
 	ska_layout_change_t *lc = (ska_layout_change_t*)data;
 
 	JNIEnv *env = (JNIEnv*)ska_android_get_jni_env();
-	if (!env || !g_ska.android_context) { ska_free(lc); return; }
+	if (!env || !g_ska.android_context || !g_ska.android_is_activity) { ska_free(lc); return; }
 
 	jobject jwindow = (*env)->CallObjectMethod(env,
 		(jobject)g_ska.android_context, g_jni_cache.activity_getWindow);
@@ -1183,7 +1200,7 @@ void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_lef
 		return;
 	}
 
-	if (!g_ska.android_context) {
+	if (!g_ska.android_context || !g_ska.android_is_activity) {
 		return;
 	}
 
@@ -1308,7 +1325,7 @@ float ska_platform_get_refresh_rate(const ska_window_t* window) {
 		return 0.0f;
 	}
 
-	if (!g_ska.android_context) {
+	if (!g_ska.android_context || !g_ska.android_is_activity) {
 		return 0.0f;
 	}
 
@@ -1443,9 +1460,9 @@ bool ska_platform_vk_create_surface(const ska_window_t* window, VkInstance insta
 // ========== Text Input Platform Functions ==========
 
 void ska_platform_show_virtual_keyboard(bool visible, ska_text_input_type_ type) {
-	// Android - JNI implementation to show/hide soft keyboard
+	// Requires an Activity — Services have no window/decor view for keyboard focus
 	JNIEnv* env = ska_android_get_jni_env();
-	if (!env || !g_ska.android_context) {
+	if (!env || !g_ska.android_context || !g_ska.android_is_activity) {
 		return;
 	}
 
@@ -1929,7 +1946,8 @@ static void ska_file_dialog_jni_init(void) {
 }
 
 bool ska_platform_file_dialog_available(ska_file_dialog_ type) {
-	if (!g_ska.android_context) {
+	// File dialogs use Fragments + startActivityForResult — Activity only
+	if (!g_ska.android_context || !g_ska.android_is_activity) {
 		return false;
 	}
 
@@ -2006,6 +2024,11 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 	// Launch file picker via SkAppResultFragment (headless fragment that
 	// receives onActivityResult and forwards it to native code). Works with
 	// any Activity — no SkAppActivity subclass required.
+
+	if (!g_ska.android_is_activity) {
+		ska_set_error("File dialogs require an Activity context");
+		return false;
+	}
 
 	if (g_android_file_dialog.active) {
 		ska_set_error("File dialog already active");
