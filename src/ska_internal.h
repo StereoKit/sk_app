@@ -120,7 +120,7 @@ typedef enum VkStructureType {
 // Event Queue
 // ============================================================================
 
-#define SKA_EVENT_QUEUE_SIZE 256
+#define SKA_EVENT_QUEUE_SIZE 512
 
 typedef struct ska_event_queue_t {
 	ska_event_t events[SKA_EVENT_QUEUE_SIZE];
@@ -241,6 +241,7 @@ typedef struct ska_state_t {
 	ska_window_id_t next_window_id;
 
 	ska_event_queue_t event_queue;
+	bool              event_queue_was_empty; // Frame boundary detection for auto-clearing text
 	ska_input_state_t input_state;
 
 	// Platform-specific state

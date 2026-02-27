@@ -9,6 +9,9 @@ From the project root:
 ### Linux
 
 ```sh
+# Dependencies
+sudo apt-get install cmake libx11-dev libxrandr-dev libxcursor-dev
+
 # To configure
 cmake -B build
 

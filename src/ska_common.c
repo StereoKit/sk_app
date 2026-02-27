@@ -509,10 +509,21 @@ SKA_API bool ska_event_poll(ska_event_t* out_event) {
 		return false;
 	}
 
+	// At frame start, discard any unconsumed text from the previous frame.
+	// Apps that use text input will have already consumed it before calling
+	// ska_event_poll again.
+	if (g_ska.event_queue_was_empty) {
+		ska_text_queue_t* tq = &g_ska.input_state.text_queue;
+		tq->read_pos  = 0;
+		tq->write_pos = 0;
+		tq->count     = 0;
+	}
+
 	// Process platform events first
 	ska_platform_pump_events();
 
 	bool has_event = ska_event_queue_pop(&g_ska.event_queue, out_event);
+	g_ska.event_queue_was_empty = !has_event;
 
 	// Feed text input events to the text queue
 	if (has_event && out_event->type == ska_event_text_input) {
