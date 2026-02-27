@@ -214,8 +214,8 @@ function(_apk_build_dex APK_TARGET)
 			OUTPUT ${JAVA_CLASS_FILES}
 			DEPENDS ${JAVA_SRC_FILES}
 			COMMAND ${JAVAC}
-				-source 1.8 -target 1.8
-				-bootclasspath ${ANDROID_JAR}
+				--release 8
+				-classpath ${ANDROID_JAR}
 				-d ${APK_BUILD_DIR}/obj
 				-sourcepath ${APK_BUILD_DIR}/src
 				${JAVA_SRC_FILES}
