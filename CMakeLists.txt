@@ -179,7 +179,6 @@ elseif(UNIX)
 		X11::X11
 		X11::Xrandr
 		X11::Xcursor
-		X11::Xi
 	)
 
 else()

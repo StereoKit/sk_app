@@ -149,12 +149,6 @@ bool ska_platform_init(void) {
 	// Initialize scancode table
 	ska_init_scancode_table();
 
-	// Check for XInput2
-	int32_t xi_event, xi_error;
-	if (!XQueryExtension(g_ska.x_display, "XInputExtension", &g_ska.xi_opcode, &xi_event, &xi_error)) {
-		ska_log(ska_log_warn, "XInput extension not available");
-	}
-
 	// Detect XWayland (X11 running on Wayland compositor)
 	// This affects mouse warp behavior workarounds
 	g_ska.is_xwayland = getenv("WAYLAND_DISPLAY") != NULL;

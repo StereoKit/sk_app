@@ -51,7 +51,6 @@ char* ska_strdup(const char* str);
 	#include <X11/Xutil.h>
 	#include <X11/Xatom.h>
 	#include <X11/extensions/Xrandr.h>
-	#include <X11/extensions/XInput2.h>
 	#include <X11/cursorfont.h>
 	#include <X11/Xcursor/Xcursor.h>
 #endif
@@ -263,7 +262,6 @@ typedef struct ska_state_t {
 	Atom net_wm_state_maximized_horz;
 	Atom resource_manager; // For DPI change detection
 	XIM xim;
-	int32_t xi_opcode;
 	float cached_dpi_scale; // Track DPI changes
 	bool is_xwayland;       // Running under XWayland (X11 on Wayland)
 #endif
