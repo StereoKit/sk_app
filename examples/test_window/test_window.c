@@ -52,6 +52,18 @@ static bool    g_verbose = false;
 	else { TEST_FAIL(name, msg); } \
 } while(0)
 
+// Runs the test normally. On Android, if it fails, reclassifies as SKIP
+// instead of FAIL since the failure is a known platform limitation.
+#ifdef SKA_PLATFORM_ANDROID
+#define TEST_ANDROID_EXPECTED(name, condition, reason) do { \
+	if (condition) { TEST_PASS(name); } \
+	else { TEST_SKIP(name, reason); } \
+} while(0)
+#else
+#define TEST_ANDROID_EXPECTED(name, condition, reason) \
+	TEST_ASSERT(name, condition)
+#endif
+
 // ============================================================================
 // Test Categories
 // ============================================================================
@@ -145,7 +157,7 @@ static void test_file_io(void) {
 
 	// Test text file write
 	bool wrote_text = ska_file_write_text(test_file, test_data);
-	TEST_ASSERT("ska_file_write_text succeeds", wrote_text);
+	TEST_ANDROID_EXPECTED("ska_file_write_text succeeds", wrote_text, "file write via CWD not available on Android");
 
 	// Test file exists
 	if (wrote_text) {
@@ -171,7 +183,7 @@ static void test_file_io(void) {
 
 	// Test binary file write
 	bool wrote_binary = ska_file_write(binary_file, binary_data, sizeof(binary_data));
-	TEST_ASSERT("ska_file_write succeeds", wrote_binary);
+	TEST_ANDROID_EXPECTED("ska_file_write succeeds", wrote_binary, "file write via CWD not available on Android");
 
 	if (wrote_binary) {
 		// Test binary file read
@@ -195,7 +207,7 @@ static void test_file_io(void) {
 
 	// Test empty file write
 	bool wrote_empty = ska_file_write("ska_test_empty.bin", NULL, 0);
-	TEST_ASSERT("ska_file_write with size=0 succeeds", wrote_empty);
+	TEST_ANDROID_EXPECTED("ska_file_write with size=0 succeeds", wrote_empty, "file write via CWD not available on Android");
 	if (wrote_empty) {
 		TEST_ASSERT("empty file has size 0", ska_file_size("ska_test_empty.bin") == 0);
 	}
@@ -219,9 +231,8 @@ static void test_directory_iteration(void) {
 	int32_t entry_count = 0;
 	bool result = ska_dir_iterate(".", &entry_count, dir_iterate_callback);
 
-	TEST_ASSERT("ska_dir_iterate on '.' succeeds", result);
-	TEST_ASSERT_MSG("ska_dir_iterate finds entries", entry_count > 0,
-		"no entries found in current directory");
+	TEST_ANDROID_EXPECTED("ska_dir_iterate on '.' succeeds", result, "CWD not readable on Android");
+	TEST_ANDROID_EXPECTED("ska_dir_iterate finds entries", entry_count > 0, "CWD not readable on Android");
 
 	if (g_verbose) {
 		ska_log(ska_log_info, "  Found %d entries in current directory", entry_count);
@@ -518,10 +529,10 @@ static void test_input_state(void) {
 	TEST_ASSERT("ska_mouse_get_relative_mode returns false initially", !relative);
 
 	bool set_relative = ska_mouse_set_relative_mode(true);
-	TEST_ASSERT("ska_mouse_set_relative_mode(true) succeeds", set_relative);
+	TEST_ANDROID_EXPECTED("ska_mouse_set_relative_mode(true) succeeds", set_relative, "relative mouse mode not supported on Android");
 
 	relative = ska_mouse_get_relative_mode();
-	TEST_ASSERT("ska_mouse_get_relative_mode returns true after set", relative);
+	TEST_ANDROID_EXPECTED("ska_mouse_get_relative_mode returns true after set", relative, "relative mouse mode not supported on Android");
 
 	ska_mouse_set_relative_mode(false);
 	relative = ska_mouse_get_relative_mode();
@@ -693,7 +704,7 @@ static void test_multiple_windows(void) {
 		ska_window_resizable
 	);
 
-	TEST_ASSERT("second window creation succeeds", window2 != NULL);
+	TEST_ANDROID_EXPECTED("second window creation succeeds", window2 != NULL, "Android only supports a single window");
 
 	if (window2) {
 		ska_window_id_t id2 = ska_window_get_id(window2);
@@ -738,7 +749,11 @@ static void test_mouse_warp(ska_window_t* window) {
 
 static void run_interactive_demo(ska_window_t* window) {
 	ska_log(ska_log_info, "\n=== Interactive Demo Mode ===");
+#ifdef SKA_PLATFORM_ANDROID
+	ska_log(ska_log_info, "Tap screen to exit, or use keys if available:");
+#else
 	ska_log(ska_log_info, "Press ESC to exit, other keys for various tests:");
+#endif
 	ska_log(ska_log_info, "  M - Maximize    N - Minimize    R - Restore");
 	ska_log(ska_log_info, "  C - Toggle cursor    V - Toggle relative mouse");
 	ska_log(ska_log_info, "  F - File dialog (open)    G - File dialog (save)");
@@ -833,6 +848,12 @@ static void run_interactive_demo(ska_window_t* window) {
 					}
 					ska_file_dialog_free_result(&event.file_dialog);
 					break;
+
+#ifdef SKA_PLATFORM_ANDROID
+				case ska_event_mouse_button_down:
+					running = false;
+					break;
+#endif
 
 				default:
 					break;

@@ -1210,6 +1210,14 @@ bool ska_platform_window_create(
 ) {
 	(void)x; (void)y; (void)w; (void)h; (void)flags;
 
+	// Android only provides a single native window per Activity.
+	// Note: ska_window_alloc() already incremented window_count for this
+	// window before calling us, so the current window is included in the count.
+	if (g_ska.window_count > 1) {
+		ska_set_error("Android does not support multiple windows");
+		return false;
+	}
+
 	// On Android, we don't create windows - the system provides one
 	// We'll use the ANativeWindow when it becomes available
 
