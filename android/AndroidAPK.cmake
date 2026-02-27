@@ -45,21 +45,21 @@ endif()
 # Cache SDK root for use in deferred functions
 set(ANDROID_SDK_ROOT "${ANDROID_SDK_ROOT}" CACHE INTERNAL "Android SDK root")
 
-# Find a build-tools folder in the Android SDK that matches our CMAKE_SYSTEM_VERSION
+# Find a build-tools folder in the Android SDK that matches our API level
 if(ANDROID_BUILD_TOOLS_VERSION AND EXISTS "${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}")
 	set(ANDROID_BUILD_TOOLS_PATH "${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}")
 else()
 	file(GLOB BUILD_TOOLS_VERSIONS LIST_DIRECTORIES true "${ANDROID_SDK_ROOT}/build-tools/*")
 	foreach(VERSION_DIR ${BUILD_TOOLS_VERSIONS})
 		get_filename_component(VERSION_NAME ${VERSION_DIR} NAME)
-		if(VERSION_NAME MATCHES "${CMAKE_SYSTEM_VERSION}\.")
+		if(VERSION_NAME MATCHES "${SKA_API_LEVEL}\.")
 			set(ANDROID_BUILD_TOOLS_PATH "${VERSION_DIR}")
 			break()
 		endif()
 	endforeach()
 endif()
 if(NOT EXISTS "${ANDROID_BUILD_TOOLS_PATH}")
-	message(STATUS "Can't find build-tools matching ANDROID_BUILD_TOOLS_VERSION ${ANDROID_BUILD_TOOLS_VERSION} or CMAKE_SYSTEM_VERSION ${CMAKE_SYSTEM_VERSION}")
+	message(STATUS "Can't find build-tools matching ANDROID_BUILD_TOOLS_VERSION ${ANDROID_BUILD_TOOLS_VERSION} or SKA_API_LEVEL ${SKA_API_LEVEL}")
 endif()
 
 # Find JDK bin folder
@@ -77,7 +77,7 @@ message(STATUS "APK build var - CMAKE_ANDROID_NDK        : ${CMAKE_ANDROID_NDK}"
 message(STATUS "APK build var - ANDROID_BUILD_TOOLS_PATH : ${ANDROID_BUILD_TOOLS_PATH}")
 message(STATUS "APK build var - JAVA_HOME_BIN            : ${JAVA_HOME_BIN}")
 message(STATUS "APK build var - CMAKE_ANDROID_ARCH_ABI   : ${CMAKE_ANDROID_ARCH_ABI}")
-message(STATUS "APK build var - CMAKE_SYSTEM_VERSION     : ${CMAKE_SYSTEM_VERSION}")
+message(STATUS "APK build var - SKA_API_LEVEL            : ${SKA_API_LEVEL}")
 
 ###############################################################################
 ## Build tools
@@ -177,7 +177,8 @@ function(_apk_build_dex APK_TARGET)
 	# Find Android SDK jar for compilation
 	set(ANDROID_JAR "${ANDROID_SDK_ROOT}/platforms/android-${APK_MIN_SDK}/android.jar")
 	if(NOT EXISTS "${ANDROID_JAR}")
-		set(ANDROID_JAR "${ANDROID_SDK_ROOT}/platforms/android-32/android.jar")
+		message(FATAL_ERROR "Android SDK jar not found at ${ANDROID_JAR}. "
+			"Ensure android-${APK_MIN_SDK} platform is installed.")
 	endif()
 
 	set(DEX_DEPENDS "")

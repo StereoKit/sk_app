@@ -95,6 +95,13 @@ elseif(ANDROID)
 	set(SKA_PLATFORM "ANDROID")
 	target_compile_definitions(sk_app PRIVATE SKA_PLATFORM_ANDROID)
 
+	# ANDROID_PLATFORM is an official NDK toolchain variable, set via
+	# -DANDROID_PLATFORM=android-NN. We parse the API level from it.
+	if(NOT DEFINED ANDROID_PLATFORM)
+		message(FATAL_ERROR "ANDROID_PLATFORM is not set. Use -DANDROID_PLATFORM=android-NN with the NDK toolchain.")
+	endif()
+	string(REGEX REPLACE "android-" "" SKA_API_LEVEL "${ANDROID_PLATFORM}")
+
 	# Android-specific sources
 	target_sources(sk_app PRIVATE src/ska_android.c)
 
@@ -128,7 +135,11 @@ elseif(ANDROID)
 
 	set(SKA_JAR_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/jar_sk_app")
 	set(SKA_JAR_OUTPUT    "${CMAKE_CURRENT_BINARY_DIR}/sk_app.jar")
-	set(SKA_ANDROID_JAR   "${ANDROID_SDK_ROOT}/platforms/android-32/android.jar")
+	set(SKA_ANDROID_JAR   "${ANDROID_SDK_ROOT}/platforms/android-${SKA_API_LEVEL}/android.jar")
+	if(NOT EXISTS "${SKA_ANDROID_JAR}")
+		message(FATAL_ERROR "Android SDK jar not found at ${SKA_ANDROID_JAR}. "
+			"Ensure android-${SKA_API_LEVEL} platform is installed.")
+	endif()
 	set(SKA_JAVA_DIR      "${CMAKE_CURRENT_SOURCE_DIR}/android/java")
 	set(SKA_JAVA_SOURCES
 		${SKA_JAVA_DIR}/net/stereokit/sk_app/SkAppActivity.java
