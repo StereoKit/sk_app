@@ -433,8 +433,6 @@ SKA_API void ska_window_get_content_size(const ska_window_t* window, int32_t* op
 SKA_API void ska_window_get_drawable_size(ska_window_t* ref_window, int32_t* opt_out_width, int32_t* opt_out_height) {
 	if (!ref_window) return;
 	ska_platform_window_get_drawable_size(ref_window, opt_out_width, opt_out_height);
-	if (opt_out_width)  *opt_out_width  = ref_window->drawable_width;
-	if (opt_out_height) *opt_out_height = ref_window->drawable_height;
 }
 
 SKA_API float ska_window_get_dpi_scale(const ska_window_t* window) {

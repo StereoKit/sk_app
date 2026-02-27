@@ -524,12 +524,10 @@ void ska_platform_window_raise(ska_window_t* window) {
 }
 
 void ska_platform_window_get_drawable_size(ska_window_t* window, int32_t* opt_out_width, int32_t* opt_out_height) {
-	@autoreleasepool {
-		/* Already computed during resize, just return cached values */
-		/* Retina displays have drawable size != window size */
-		(void)opt_out_width;
-		(void)opt_out_height;
-	}
+	/* Already computed during resize — Retina displays have
+	   drawable size != window size */
+	if (opt_out_width)  *opt_out_width  = window->drawable_width;
+	if (opt_out_height) *opt_out_height = window->drawable_height;
 }
 
 float ska_platform_get_dpi_scale(const ska_window_t* window) {

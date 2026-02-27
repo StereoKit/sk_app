@@ -18,6 +18,11 @@
 // Scancode translation table (Android key codes to ska_scancode_)
 static ska_scancode_ ska_android_scancode_table[256];
 
+// Previous Android button state for diffing BUTTON_PRESS/RELEASE events.
+// getButtonState() returns cumulative state, so we diff against the previous
+// value to determine which specific button changed.
+static int32_t g_android_prev_button_state = 0;
+
 // ============================================================================
 // Pre-init state — survives the memset in ska_init()
 // ============================================================================
@@ -42,28 +47,82 @@ SKA_API void ska_android_set_app(void* app) {
 // Classes must be converted to global references to survive across JNI calls.
 
 static struct {
-	// NativeActivity -> Window
+	// Activity -> Window (Activity-only)
 	jmethodID   activity_getWindow;
-	// Window methods
+	jmethodID   activity_getWindowManager;
+	// Window methods (Activity-only)
 	jmethodID   window_getAttributes;
 	jmethodID   window_setAttributes;
 	jmethodID   window_getDecorView;
-	// View methods
+	// View methods (Activity-only)
 	jmethodID   view_getWidth;
 	jmethodID   view_getHeight;
-	// LayoutParams fields
+	jmethodID   view_getWindowToken;
+	// LayoutParams fields (Activity-only)
 	jfieldID    lp_x;
 	jfieldID    lp_y;
 	jfieldID    lp_width;
 	jfieldID    lp_height;
-	// Content URI helpers (Uri.parse, ContentResolver)
+	// Display (Activity-only, looked up via getWindowManager)
+	jclass      display_class;
+	jmethodID   wm_getDefaultDisplay;
+	jmethodID   display_getRefreshRate;
+	// Context methods (work with any Context)
+	jmethodID   ctx_getContentResolver;
+	jmethodID   ctx_getSystemService;
+	// Content URI helpers
 	jclass      uri_class;
 	jmethodID   uri_parse;
-	jmethodID   ctx_getContentResolver;
+	// Clipboard (Context-based — works from Services too)
+	jclass      clipboard_class;
+	jmethodID   clipboard_hasPrimaryClip;
+	jmethodID   clipboard_getPrimaryClip;
+	jmethodID   clipboard_setPrimaryClip;
+	jclass      clip_data_class;
+	jmethodID   clip_data_getItemAt;
+	jmethodID   clip_data_newPlainText;
+	jclass      clip_item_class;
+	jmethodID   clip_item_getText;
+	jclass      charseq_class;
+	jmethodID   charseq_toString;
+	// InputMethodManager (Activity-only — needs window for focus)
+	jclass      imm_class;
+	jmethodID   imm_showSoftInput;
+	jmethodID   imm_hideSoftInputFromWindow;
 	// UI thread trampoline (SkAppActivity.skaRunOnUiThread)
 	jclass      ui_helper_class;
 	jmethodID   ui_helper_run;
 } g_jni_cache = {0};
+
+// Cached JNI references for file dialog
+static struct {
+	jclass    intent_class;
+	jmethodID intent_init;
+	jmethodID intent_setType;
+	jmethodID intent_addCategory;
+	jmethodID intent_putExtra_bool;
+	jclass    pm_class;
+	jmethodID pm_queryIntentActivities;
+	jmethodID activity_getPackageManager;
+	jclass    fragment_class;
+	jmethodID fragment_launch;
+	bool      fragment_available;
+	bool      initialized;
+} g_file_dialog_jni = {0};
+
+// Cached JNI references for KVP store (SharedPreferences + Base64)
+static struct {
+	jmethodID ctx_getSharedPreferences;
+	jmethodID prefs_getString;
+	jmethodID prefs_edit;
+	jmethodID editor_putString;
+	jmethodID editor_remove;
+	jmethodID editor_apply;
+	jclass    base64_class;
+	jmethodID base64_encodeToString;
+	jmethodID base64_decode;
+	bool      initialized;
+} g_kvp_jni = {0};
 
 // ============================================================================
 // JNI Helpers
@@ -186,49 +245,94 @@ static void ska_jni_cache_init(void) {
 	if (activity_base) (*env)->DeleteLocalRef(env, activity_base);
 
 	if (g_ska.android_is_activity) {
-		// Activity.getWindow() — uses GetObjectClass so it works with any Activity subclass
+		// Activity-specific methods (getWindow, getWindowManager, etc.)
 		jclass activity_class = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
-		g_jni_cache.activity_getWindow = (*env)->GetMethodID(env, activity_class, "getWindow", "()Landroid/view/Window;");
+		g_jni_cache.activity_getWindow        = (*env)->GetMethodID(env, activity_class, "getWindow",        "()Landroid/view/Window;");
+		g_jni_cache.activity_getWindowManager = (*env)->GetMethodID(env, activity_class, "getWindowManager", "()Landroid/view/WindowManager;");
 		(*env)->DeleteLocalRef(env, activity_class);
 
 		// Window methods
 		jclass window_class = (*env)->FindClass(env, "android/view/Window");
 		g_jni_cache.window_getAttributes = (*env)->GetMethodID(env, window_class, "getAttributes", "()Landroid/view/WindowManager$LayoutParams;");
 		g_jni_cache.window_setAttributes = (*env)->GetMethodID(env, window_class, "setAttributes", "(Landroid/view/WindowManager$LayoutParams;)V");
-		g_jni_cache.window_getDecorView  = (*env)->GetMethodID(env, window_class, "getDecorView", "()Landroid/view/View;");
+		g_jni_cache.window_getDecorView  = (*env)->GetMethodID(env, window_class, "getDecorView",  "()Landroid/view/View;");
 		(*env)->DeleteLocalRef(env, window_class);
 
 		// View methods
 		jclass view_class = (*env)->FindClass(env, "android/view/View");
-		g_jni_cache.view_getWidth  = (*env)->GetMethodID(env, view_class, "getWidth", "()I");
-		g_jni_cache.view_getHeight = (*env)->GetMethodID(env, view_class, "getHeight", "()I");
+		g_jni_cache.view_getWidth       = (*env)->GetMethodID(env, view_class, "getWidth",       "()I");
+		g_jni_cache.view_getHeight      = (*env)->GetMethodID(env, view_class, "getHeight",      "()I");
+		g_jni_cache.view_getWindowToken = (*env)->GetMethodID(env, view_class, "getWindowToken", "()Landroid/os/IBinder;");
 		(*env)->DeleteLocalRef(env, view_class);
 
 		// LayoutParams fields
 		jclass lp_class = (*env)->FindClass(env, "android/view/WindowManager$LayoutParams");
-		g_jni_cache.lp_x      = (*env)->GetFieldID(env, lp_class, "x", "I");
-		g_jni_cache.lp_y      = (*env)->GetFieldID(env, lp_class, "y", "I");
-		g_jni_cache.lp_width  = (*env)->GetFieldID(env, lp_class, "width", "I");
+		g_jni_cache.lp_x      = (*env)->GetFieldID(env, lp_class, "x",      "I");
+		g_jni_cache.lp_y      = (*env)->GetFieldID(env, lp_class, "y",      "I");
+		g_jni_cache.lp_width  = (*env)->GetFieldID(env, lp_class, "width",  "I");
 		g_jni_cache.lp_height = (*env)->GetFieldID(env, lp_class, "height", "I");
 		(*env)->DeleteLocalRef(env, lp_class);
+
+		// Display (for refresh rate via getWindowManager)
+		jclass wm_class = (*env)->FindClass(env, "android/view/WindowManager");
+		g_jni_cache.wm_getDefaultDisplay = (*env)->GetMethodID(env, wm_class, "getDefaultDisplay", "()Landroid/view/Display;");
+		(*env)->DeleteLocalRef(env, wm_class);
+
+		jclass display_class = (*env)->FindClass(env, "android/view/Display");
+		g_jni_cache.display_class          = (*env)->NewGlobalRef(env, display_class);
+		g_jni_cache.display_getRefreshRate = (*env)->GetMethodID (env, display_class, "getRefreshRate", "()F");
+		(*env)->DeleteLocalRef(env, display_class);
+
+		// InputMethodManager (virtual keyboard — needs Activity window)
+		jclass imm_class = (*env)->FindClass(env, "android/view/inputmethod/InputMethodManager");
+		g_jni_cache.imm_class                    = (*env)->NewGlobalRef(env, imm_class);
+		g_jni_cache.imm_showSoftInput            = (*env)->GetMethodID (env, imm_class, "showSoftInput",           "(Landroid/view/View;I)Z");
+		g_jni_cache.imm_hideSoftInputFromWindow  = (*env)->GetMethodID (env, imm_class, "hideSoftInputFromWindow", "(Landroid/os/IBinder;I)Z");
+		(*env)->DeleteLocalRef(env, imm_class);
 	} else {
 		ska_log(ska_log_info, "Context is not an Activity — window management unavailable");
 	}
 
-	// Content URI helpers — used by content_read and file dialog results
+	// Context methods — work with any Context (Activity, Service, etc.)
+	jclass ctx_class = (*env)->FindClass(env, "android/content/Context");
+	g_jni_cache.ctx_getContentResolver = (*env)->GetMethodID(env, ctx_class, "getContentResolver", "()Landroid/content/ContentResolver;");
+	g_jni_cache.ctx_getSystemService   = (*env)->GetMethodID(env, ctx_class, "getSystemService",   "(Ljava/lang/String;)Ljava/lang/Object;");
+	(*env)->DeleteLocalRef(env, ctx_class);
+
+	// Content URI helpers
 	jclass uri_class = (*env)->FindClass(env, "android/net/Uri");
 	g_jni_cache.uri_class = (*env)->NewGlobalRef     (env, uri_class);
 	g_jni_cache.uri_parse = (*env)->GetStaticMethodID(env, uri_class, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
 	(*env)->DeleteLocalRef(env, uri_class);
 
-	jclass ctx_class = (*env)->FindClass(env, "android/content/Context");
-	g_jni_cache.ctx_getContentResolver = (*env)->GetMethodID(env, ctx_class, "getContentResolver", "()Landroid/content/ContentResolver;");
-	(*env)->DeleteLocalRef(env, ctx_class);
+	// Clipboard — Context-based, works from Services too
+	jclass cm_class = (*env)->FindClass(env, "android/content/ClipboardManager");
+	g_jni_cache.clipboard_class          = (*env)->NewGlobalRef(env, cm_class);
+	g_jni_cache.clipboard_hasPrimaryClip = (*env)->GetMethodID (env, cm_class, "hasPrimaryClip", "()Z");
+	g_jni_cache.clipboard_getPrimaryClip = (*env)->GetMethodID (env, cm_class, "getPrimaryClip", "()Landroid/content/ClipData;");
+	g_jni_cache.clipboard_setPrimaryClip = (*env)->GetMethodID (env, cm_class, "setPrimaryClip", "(Landroid/content/ClipData;)V");
+	(*env)->DeleteLocalRef(env, cm_class);
+
+	jclass cd_class = (*env)->FindClass(env, "android/content/ClipData");
+	g_jni_cache.clip_data_class        = (*env)->NewGlobalRef     (env, cd_class);
+	g_jni_cache.clip_data_getItemAt    = (*env)->GetMethodID      (env, cd_class, "getItemAt",    "(I)Landroid/content/ClipData$Item;");
+	g_jni_cache.clip_data_newPlainText = (*env)->GetStaticMethodID(env, cd_class, "newPlainText", "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;");
+	(*env)->DeleteLocalRef(env, cd_class);
+
+	jclass ci_class = (*env)->FindClass(env, "android/content/ClipData$Item");
+	g_jni_cache.clip_item_class   = (*env)->NewGlobalRef(env, ci_class);
+	g_jni_cache.clip_item_getText = (*env)->GetMethodID (env, ci_class, "getText", "()Ljava/lang/CharSequence;");
+	(*env)->DeleteLocalRef(env, ci_class);
+
+	jclass cs_class = (*env)->FindClass(env, "java/lang/CharSequence");
+	g_jni_cache.charseq_class    = (*env)->NewGlobalRef(env, cs_class);
+	g_jni_cache.charseq_toString = (*env)->GetMethodID (env, cs_class, "toString", "()Ljava/lang/String;");
+	(*env)->DeleteLocalRef(env, cs_class);
 
 	// UI-thread trampoline — SkAppActivity.skaRunOnUiThread()
 	jclass ui_class = ska_android_find_app_class(env, "net.stereokit.sk_app.SkAppActivity");
 	if (ui_class) {
-		g_jni_cache.ui_helper_class = (*env)->NewGlobalRef(env, ui_class);
+		g_jni_cache.ui_helper_class = (*env)->NewGlobalRef     (env, ui_class);
 		g_jni_cache.ui_helper_run   = (*env)->GetStaticMethodID(env, ui_class,
 			"skaRunOnUiThread", "(Landroid/app/Activity;J)V");
 
@@ -239,7 +343,7 @@ static void ska_jni_cache_init(void) {
 			(void*)Java_net_stereokit_sk_app_SkAppActivity_nativeUiCallback
 		}};
 		(*env)->RegisterNatives(env, ui_class, methods, 1);
-		(*env)->DeleteLocalRef(env, ui_class);
+		(*env)->DeleteLocalRef (env, ui_class);
 	} else {
 		ska_log(ska_log_warn, "SkAppActivity not found — UI-thread dispatch unavailable");
 	}
@@ -248,7 +352,13 @@ static void ska_jni_cache_init(void) {
 static void ska_jni_cache_shutdown(void) {
 	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
 	if (env) {
+		if (g_jni_cache.display_class)   (*env)->DeleteGlobalRef(env, g_jni_cache.display_class);
+		if (g_jni_cache.imm_class)       (*env)->DeleteGlobalRef(env, g_jni_cache.imm_class);
 		if (g_jni_cache.uri_class)       (*env)->DeleteGlobalRef(env, g_jni_cache.uri_class);
+		if (g_jni_cache.clipboard_class) (*env)->DeleteGlobalRef(env, g_jni_cache.clipboard_class);
+		if (g_jni_cache.clip_data_class) (*env)->DeleteGlobalRef(env, g_jni_cache.clip_data_class);
+		if (g_jni_cache.clip_item_class) (*env)->DeleteGlobalRef(env, g_jni_cache.clip_item_class);
+		if (g_jni_cache.charseq_class)   (*env)->DeleteGlobalRef(env, g_jni_cache.charseq_class);
 		if (g_jni_cache.ui_helper_class) (*env)->DeleteGlobalRef(env, g_jni_cache.ui_helper_class);
 	}
 	memset(&g_jni_cache, 0, sizeof(g_jni_cache));
@@ -385,6 +495,15 @@ static void ska_init_scancode_table(void) {
 	ska_android_scancode_table[AKEYCODE_SHIFT_RIGHT] = ska_scancode_rshift;
 	ska_android_scancode_table[AKEYCODE_ALT_RIGHT] = ska_scancode_ralt;
 	ska_android_scancode_table[AKEYCODE_META_RIGHT] = ska_scancode_rgui;
+}
+
+static ska_mouse_button_ ska_android_map_button(int32_t android_button_bit) {
+	if (android_button_bit & AMOTION_EVENT_BUTTON_PRIMARY)   return ska_mouse_button_left;
+	if (android_button_bit & AMOTION_EVENT_BUTTON_SECONDARY) return ska_mouse_button_right;
+	if (android_button_bit & AMOTION_EVENT_BUTTON_TERTIARY)  return ska_mouse_button_middle;
+	if (android_button_bit & AMOTION_EVENT_BUTTON_BACK)      return ska_mouse_button_x1;
+	if (android_button_bit & AMOTION_EVENT_BUTTON_FORWARD)   return ska_mouse_button_x2;
+	return 0;
 }
 
 static uint16_t ska_android_get_modifiers(int32_t meta_state) {
@@ -672,10 +791,16 @@ static bool ska_jni_input_cache_init(JNIEnv *env) {
 
 	if (!g_jni_input_cache.motion_get_action ||
 		!g_jni_input_cache.motion_get_x ||
-		!g_jni_input_cache.motion_get_y) return false;
+		!g_jni_input_cache.motion_get_y) {
+		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+		return false;
+	}
 
 	jclass ke = (*env)->FindClass(env, "android/view/KeyEvent");
-	if (!ke) return false;
+	if (!ke) {
+		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+		return false;
+	}
 	g_jni_input_cache.key_event_class    = (jclass)(*env)->NewGlobalRef(env, ke);
 	g_jni_input_cache.key_get_action     = (*env)->GetMethodID(env, ke, "getAction",    "()I");
 	g_jni_input_cache.key_get_key_code   = (*env)->GetMethodID(env, ke, "getKeyCode",   "()I");
@@ -684,7 +809,10 @@ static bool ska_jni_input_cache_init(JNIEnv *env) {
 
 	if (!g_jni_input_cache.key_get_action ||
 		!g_jni_input_cache.key_get_key_code ||
-		!g_jni_input_cache.key_get_meta_state) return false;
+		!g_jni_input_cache.key_get_meta_state) {
+		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+		return false;
+	}
 
 	g_jni_input_cache.initialized = true;
 	return true;
@@ -764,9 +892,6 @@ static int32_t ska_android_handle_input(struct android_app* app, AInputEvent* in
 		return 0;
 	}
 
-	ska_event_t event = {0};
-	event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
-
 	int32_t event_type = AInputEvent_getType(input_event);
 
 	if (event_type == AINPUT_EVENT_TYPE_KEY) {
@@ -776,7 +901,8 @@ static int32_t ska_android_handle_input(struct android_app* app, AInputEvent* in
 			AKeyEvent_getMetaState(input_event)) ? 1 : 0;
 
 	} else if (event_type == AINPUT_EVENT_TYPE_MOTION) {
-		// Touch/Mouse event
+		ska_event_t event = {0};
+		event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 		int32_t action = AMotionEvent_getAction(input_event);
 		int32_t action_masked = action & AMOTION_EVENT_ACTION_MASK;
 		int32_t source = AInputEvent_getSource(input_event);
@@ -808,22 +934,16 @@ static int32_t ska_android_handle_input(struct android_app* app, AInputEvent* in
 			return 1;
 		}
 
-		// Handle mouse button events (for mice/trackpads connected to Android)
+		// Handle mouse button events (for mice/trackpads connected to Android).
+		// getButtonState() returns cumulative state, so we diff against the
+		// previous value to determine which specific button changed.
 		if ((source & AINPUT_SOURCE_MOUSE) && action_masked == AMOTION_EVENT_ACTION_BUTTON_PRESS) {
-			int32_t button_state = AMotionEvent_getButtonState(input_event);
-			ska_mouse_button_ button = ska_mouse_button_left;
+			int32_t button_state  = AMotionEvent_getButtonState(input_event);
+			int32_t newly_pressed = button_state & ~g_android_prev_button_state;
+			g_android_prev_button_state = button_state;
 
-			if (button_state & AMOTION_EVENT_BUTTON_PRIMARY) {
-				button = ska_mouse_button_left;
-			} else if (button_state & AMOTION_EVENT_BUTTON_SECONDARY) {
-				button = ska_mouse_button_right;
-			} else if (button_state & AMOTION_EVENT_BUTTON_TERTIARY) {
-				button = ska_mouse_button_middle;
-			} else if (button_state & AMOTION_EVENT_BUTTON_BACK) {
-				button = ska_mouse_button_x1;
-			} else if (button_state & AMOTION_EVENT_BUTTON_FORWARD) {
-				button = ska_mouse_button_x2;
-			}
+			ska_mouse_button_ button = ska_android_map_button(newly_pressed);
+			if (!button) return 1;
 
 			event.type = ska_event_mouse_button_down;
 			event.mouse_button.window_id = window->id;
@@ -841,21 +961,11 @@ static int32_t ska_android_handle_input(struct android_app* app, AInputEvent* in
 
 		if ((source & AINPUT_SOURCE_MOUSE) && action_masked == AMOTION_EVENT_ACTION_BUTTON_RELEASE) {
 			int32_t button_state = AMotionEvent_getButtonState(input_event);
-			ska_mouse_button_ button = ska_mouse_button_left;
+			int32_t released     = g_android_prev_button_state & ~button_state;
+			g_android_prev_button_state = button_state;
 
-			// Note: button_state reflects the state AFTER release, so we need to check what was released
-			// For simplicity, we'll just use the last button pressed
-			if (button_state & AMOTION_EVENT_BUTTON_PRIMARY) {
-				button = ska_mouse_button_left;
-			} else if (button_state & AMOTION_EVENT_BUTTON_SECONDARY) {
-				button = ska_mouse_button_right;
-			} else if (button_state & AMOTION_EVENT_BUTTON_TERTIARY) {
-				button = ska_mouse_button_middle;
-			} else if (button_state & AMOTION_EVENT_BUTTON_BACK) {
-				button = ska_mouse_button_x1;
-			} else if (button_state & AMOTION_EVENT_BUTTON_FORWARD) {
-				button = ska_mouse_button_x2;
-			}
+			ska_mouse_button_ button = ska_android_map_button(released);
+			if (!button) return 1;
 
 			event.type = ska_event_mouse_button_up;
 			event.mouse_button.window_id = window->id;
@@ -1045,8 +1155,32 @@ bool ska_platform_init(void) {
 
 void ska_platform_shutdown(void) {
 	g_ska.asset_manager = NULL;
+	g_android_prev_button_state = 0;
+
+	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
 
 	ska_jni_cache_shutdown();
+
+	// Release input cache global refs
+	if (env && g_jni_input_cache.initialized) {
+		if (g_jni_input_cache.motion_event_class) (*env)->DeleteGlobalRef(env, g_jni_input_cache.motion_event_class);
+		if (g_jni_input_cache.key_event_class)    (*env)->DeleteGlobalRef(env, g_jni_input_cache.key_event_class);
+		memset(&g_jni_input_cache, 0, sizeof(g_jni_input_cache));
+	}
+
+	// Release file dialog cache global refs
+	if (env && g_file_dialog_jni.initialized) {
+		if (g_file_dialog_jni.intent_class)   (*env)->DeleteGlobalRef(env, g_file_dialog_jni.intent_class);
+		if (g_file_dialog_jni.pm_class)       (*env)->DeleteGlobalRef(env, g_file_dialog_jni.pm_class);
+		if (g_file_dialog_jni.fragment_class) (*env)->DeleteGlobalRef(env, g_file_dialog_jni.fragment_class);
+		memset(&g_file_dialog_jni, 0, sizeof(g_file_dialog_jni));
+	}
+
+	// Release kvp store cache global refs
+	if (env && g_kvp_jni.initialized) {
+		if (g_kvp_jni.base64_class) (*env)->DeleteGlobalRef(env, g_kvp_jni.base64_class);
+		memset(&g_kvp_jni, 0, sizeof(g_kvp_jni));
+	}
 
 	if (g_ska.android_app) {
 		g_ska.android_app->onAppCmd     = NULL;
@@ -1092,17 +1226,21 @@ bool ska_platform_window_create(
 		g_android_early.native_window = NULL;
 	}
 
+	// Non-Activity contexts (Services) don't have windows — bail instead of
+	// spinning forever waiting for a native window that will never arrive.
+	if (!g_ska.android_app && !g_ska.android_is_activity) {
+		ska_set_error("Window creation requires an Activity context");
+		return false;
+	}
+
 	ska_log(ska_log_info, "Android window stub created, waiting for native window");
 
-	// Wait for the native window to become available by polling the event loop
-	// The android_main() thread will process APP_CMD_INIT_WINDOW and set
-	// window->native_window. In library mode, ska_android_on_window_created
-	// is called directly from the host (e.g. StereoKit's
-	// android_set_window_xam).
+	// Wait for the native window to become available by polling the event loop.
+	// Standalone: android_main() processes APP_CMD_INIT_WINDOW.
+	// Library:    host calls ska_android_on_window_created() directly.
 	while (window->native_window == NULL) {
-		ska_time_sleep(10);  // Sleep 10ms between checks to avoid busy-waiting
+		ska_time_sleep(10);
 
-		// Safety check: if app is being destroyed, bail out
 		if (g_ska.android_app && g_ska.android_app->destroyRequested) {
 			ska_set_error("App destroy requested while waiting for window");
 			return false;
@@ -1267,10 +1405,8 @@ void ska_platform_window_raise(ska_window_t* window) {
 }
 
 void ska_platform_window_get_drawable_size(ska_window_t* window, int32_t* opt_out_width, int32_t* opt_out_height) {
-	// Drawable size equals window size on Android
-	(void)window;
-	(void)opt_out_width;
-	(void)opt_out_height;
+	if (opt_out_width)  *opt_out_width  = window->drawable_width;
+	if (opt_out_height) *opt_out_height = window->drawable_height;
 }
 
 float ska_platform_get_dpi_scale(const ska_window_t* window) {
@@ -1329,32 +1465,15 @@ float ska_platform_get_refresh_rate(const ska_window_t* window) {
 		return 0.0f;
 	}
 
-	// Get WindowManager: activity.getWindowManager()
-	jclass    activity_class     = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
-	jmethodID get_window_manager = (*env)->GetMethodID(env, activity_class,
-		"getWindowManager", "()Landroid/view/WindowManager;");
+	jobject wm = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context,
+		g_jni_cache.activity_getWindowManager);
+	if (!wm) return 0.0f;
 
-	jobject window_manager = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context, get_window_manager);
-	if (!window_manager) {
-		return 0.0f;
-	}
+	jobject display = (*env)->CallObjectMethod(env, wm, g_jni_cache.wm_getDefaultDisplay);
+	(*env)->DeleteLocalRef(env, wm);
+	if (!display) return 0.0f;
 
-	// Get Display: windowManager.getDefaultDisplay()
-	jclass    wm_class            = (*env)->FindClass  (env, "android/view/WindowManager");
-	jmethodID get_default_display = (*env)->GetMethodID(env, wm_class, "getDefaultDisplay", "()Landroid/view/Display;");
-
-	jobject display = (*env)->CallObjectMethod(env, window_manager, get_default_display);
-	(*env)->DeleteLocalRef(env, window_manager);
-	if (!display) {
-		return 0.0f;
-	}
-
-	// Get refresh rate: display.getRefreshRate()
-	jclass    display_class    = (*env)->FindClass  (env, "android/view/Display");
-	jmethodID get_refresh_rate = (*env)->GetMethodID(env, display_class,
-		"getRefreshRate", "()F");
-
-	jfloat rate = (*env)->CallFloatMethod(env, display, get_refresh_rate);
+	jfloat rate = (*env)->CallFloatMethod(env, display, g_jni_cache.display_getRefreshRate);
 	(*env)->DeleteLocalRef(env, display);
 
 	return (float)rate;
@@ -1381,18 +1500,12 @@ bool ska_platform_set_relative_mouse_mode(bool enabled) {
 	return false;
 }
 
-// Forward declaration for file dialog check
-static void ska_android_check_file_dialog(void);
-
 void ska_platform_pump_events(void) {
 	// On Android, events are already being pumped by the android_main() loop
 	// in the main thread. The user's main() runs in a separate thread and
 	// consumes events from the thread-safe event queue.
 	// Calling ALooper_pollOnce() here would fail with "No looper for this thread!"
 	// because the user thread doesn't have a looper attached.
-
-	// Check for file dialog completion (requires Java helper for full implementation)
-	ska_android_check_file_dialog();
 }
 
 /////////////////////////////////////////
@@ -1466,75 +1579,31 @@ void ska_platform_show_virtual_keyboard(bool visible, ska_text_input_type_ type)
 		return;
 	}
 
-	jclass activity_class = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
-	jmethodID get_system_service = (*env)->GetMethodID(env, activity_class,
-		"getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+	jstring svc_name = (*env)->NewStringUTF(env, "input_method");
+	jobject imm      = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context, g_jni_cache.ctx_getSystemService, svc_name);
+	(*env)->DeleteLocalRef(env, svc_name);
+	if (!imm) return;
 
-	jstring service_name = (*env)->NewStringUTF(env, "input_method");
-	jobject imm = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context,
-		get_system_service, service_name);
+	// Get decor view from activity's window — used by both show and hide paths
+	jobject jwindow = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context, g_jni_cache.activity_getWindow);
+	if (!jwindow) { (*env)->DeleteLocalRef(env, imm); return; }
 
-	if (!imm) {
-		(*env)->DeleteLocalRef(env, service_name);
-		return;
-	}
+	jobject decor_view = (*env)->CallObjectMethod(env, jwindow, g_jni_cache.window_getDecorView);
+	(*env)->DeleteLocalRef(env, jwindow);
+	if (!decor_view) { (*env)->DeleteLocalRef(env, imm); return; }
 
 	if (visible) {
-		jclass imm_class = (*env)->FindClass(env, "android/view/inputmethod/InputMethodManager");
-		jmethodID show_soft_input = (*env)->GetMethodID(env, imm_class,
-			"showSoftInput", "(Landroid/view/View;I)Z");
-
-		// Get the window's decor view
-		jmethodID get_window = (*env)->GetMethodID(env, activity_class,
-			"getWindow", "()Landroid/view/Window;");
-		jobject window = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context, get_window);
-
-		if (window) {
-			jclass window_class = (*env)->FindClass(env, "android/view/Window");
-			jmethodID get_decor_view = (*env)->GetMethodID(env, window_class,
-				"getDecorView", "()Landroid/view/View;");
-			jobject decor_view = (*env)->CallObjectMethod(env, window, get_decor_view);
-
-			if (decor_view) {
-				(*env)->CallBooleanMethod(env, imm, show_soft_input, decor_view, 0);
-				(*env)->DeleteLocalRef(env, decor_view);
-			}
-			(*env)->DeleteLocalRef(env, window);
-		}
+		(*env)->CallBooleanMethod(env, imm, g_jni_cache.imm_showSoftInput, decor_view, 0);
 	} else {
-		jclass imm_class = (*env)->FindClass(env, "android/view/inputmethod/InputMethodManager");
-		jmethodID hide_soft_input = (*env)->GetMethodID(env, imm_class,
-			"hideSoftInputFromWindow", "(Landroid/os/IBinder;I)Z");
-
-		// Get window token
-		jmethodID get_window = (*env)->GetMethodID(env, activity_class,
-			"getWindow", "()Landroid/view/Window;");
-		jobject window = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context, get_window);
-
-		if (window) {
-			jclass window_class = (*env)->FindClass(env, "android/view/Window");
-			jmethodID get_decor_view = (*env)->GetMethodID(env, window_class,
-				"getDecorView", "()Landroid/view/View;");
-			jobject decor_view = (*env)->CallObjectMethod(env, window, get_decor_view);
-
-			if (decor_view) {
-				jclass view_class = (*env)->FindClass(env, "android/view/View");
-				jmethodID get_window_token = (*env)->GetMethodID(env, view_class,
-					"getWindowToken", "()Landroid/os/IBinder;");
-				jobject token = (*env)->CallObjectMethod(env, decor_view, get_window_token);
-
-				if (token) {
-					(*env)->CallBooleanMethod(env, imm, hide_soft_input, token, 0);
-					(*env)->DeleteLocalRef(env, token);
-				}
-				(*env)->DeleteLocalRef(env, decor_view);
-			}
-			(*env)->DeleteLocalRef(env, window);
+		jobject token = (*env)->CallObjectMethod(env, decor_view, g_jni_cache.view_getWindowToken);
+		if (token) {
+			(*env)->CallBooleanMethod(env, imm, g_jni_cache.imm_hideSoftInputFromWindow, token, 0);
+			(*env)->DeleteLocalRef   (env, token);
 		}
 	}
 
+	(*env)->DeleteLocalRef(env, decor_view);
 	(*env)->DeleteLocalRef(env, imm);
-	(*env)->DeleteLocalRef(env, service_name);
 	(void)type; // TODO: Use type to set input mode
 }
 
@@ -1542,87 +1611,50 @@ void ska_platform_show_virtual_keyboard(bool visible, ska_text_input_type_ type)
 
 char* ska_platform_clipboard_get_text(void) {
 	JNIEnv* env = ska_android_get_jni_env();
-	if (!env || !g_ska.android_context) {
-		return NULL;
+	if (!env || !g_ska.android_context) return NULL;
+
+	char*   result     = NULL;
+	jstring svc_name   = NULL;
+	jobject cm         = NULL;
+	jobject clip_data  = NULL;
+	jobject clip_item  = NULL;
+	jobject char_seq   = NULL;
+	jstring text_jstr  = NULL;
+
+	svc_name = (*env)->NewStringUTF(env, "clipboard");
+	cm = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context,
+		g_jni_cache.ctx_getSystemService, svc_name);
+	if (!cm) goto cleanup;
+
+	if (!(*env)->CallBooleanMethod(env, cm, g_jni_cache.clipboard_hasPrimaryClip)) goto cleanup;
+
+	clip_data = (*env)->CallObjectMethod(env, cm, g_jni_cache.clipboard_getPrimaryClip);
+	if (!clip_data) goto cleanup;
+
+	clip_item = (*env)->CallObjectMethod(env, clip_data, g_jni_cache.clip_data_getItemAt, 0);
+	if (!clip_item) goto cleanup;
+
+	char_seq = (*env)->CallObjectMethod(env, clip_item, g_jni_cache.clip_item_getText);
+	if (!char_seq) goto cleanup;
+
+	text_jstr = (jstring)(*env)->CallObjectMethod(env, char_seq, g_jni_cache.charseq_toString);
+	if (!text_jstr) goto cleanup;
+
+	const char* utf8 = (*env)->GetStringUTFChars(env, text_jstr, NULL);
+	if (utf8) {
+		size_t len = strlen(utf8);
+		result = (char*)ska_malloc(len + 1);
+		if (result) memcpy(result, utf8, len + 1);
+		(*env)->ReleaseStringUTFChars(env, text_jstr, utf8);
 	}
 
-	// Get ClipboardManager
-	jclass activity_class = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
-	jmethodID get_system_service = (*env)->GetMethodID(env, activity_class,
-		"getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
-
-	jstring service_name = (*env)->NewStringUTF(env, "clipboard");
-	jobject clipboard_manager = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context,
-		get_system_service, service_name);
-
-	if (!clipboard_manager) {
-		return NULL;
-	}
-
-	// Check if clipboard has text
-	jclass clipboard_class = (*env)->FindClass(env, "android/content/ClipboardManager");
-	jmethodID has_primary_clip = (*env)->GetMethodID(env, clipboard_class,
-		"hasPrimaryClip", "()Z");
-	jboolean has_clip = (*env)->CallBooleanMethod(env, clipboard_manager, has_primary_clip);
-
-	if (!has_clip) {
-		return NULL;
-	}
-
-	// Get primary clip
-	jmethodID get_primary_clip = (*env)->GetMethodID(env, clipboard_class,
-		"getPrimaryClip", "()Landroid/content/ClipData;");
-	jobject clip_data = (*env)->CallObjectMethod(env, clipboard_manager, get_primary_clip);
-
-	if (!clip_data) {
-		return NULL;
-	}
-
-	// Get first item
-	jclass clip_data_class = (*env)->FindClass(env, "android/content/ClipData");
-	jmethodID get_item_at = (*env)->GetMethodID(env, clip_data_class,
-		"getItemAt", "(I)Landroid/content/ClipData$Item;");
-	jobject clip_item = (*env)->CallObjectMethod(env, clip_data, get_item_at, 0);
-
-	if (!clip_item) {
-		return NULL;
-	}
-
-	// Get text from item
-	jclass clip_item_class = (*env)->FindClass(env, "android/content/ClipData$Item");
-	jmethodID get_text = (*env)->GetMethodID(env, clip_item_class,
-		"getText", "()Ljava/lang/CharSequence;");
-	jobject char_sequence = (*env)->CallObjectMethod(env, clip_item, get_text);
-
-	if (!char_sequence) {
-		return NULL;
-	}
-
-	// Convert CharSequence to String
-	jclass char_sequence_class = (*env)->FindClass(env, "java/lang/CharSequence");
-	jmethodID to_string = (*env)->GetMethodID(env, char_sequence_class,
-		"toString", "()Ljava/lang/String;");
-	jstring text_string = (jstring)(*env)->CallObjectMethod(env, char_sequence, to_string);
-
-	if (!text_string) {
-		return NULL;
-	}
-
-	// Convert to UTF-8
-	const char* utf8_text = (*env)->GetStringUTFChars(env, text_string, NULL);
-	if (!utf8_text) {
-		return NULL;
-	}
-
-	// Allocate and copy the text
-	size_t len = strlen(utf8_text);
-	char* result = (char*)ska_malloc(len + 1);
-	if (result) {
-		memcpy(result, utf8_text, len + 1);
-	}
-
-	(*env)->ReleaseStringUTFChars(env, text_string, utf8_text);
-
+cleanup:
+	if (text_jstr)  (*env)->DeleteLocalRef(env, text_jstr);
+	if (char_seq)   (*env)->DeleteLocalRef(env, char_seq);
+	if (clip_item)  (*env)->DeleteLocalRef(env, clip_item);
+	if (clip_data)  (*env)->DeleteLocalRef(env, clip_data);
+	if (cm)         (*env)->DeleteLocalRef(env, cm);
+	if (svc_name)   (*env)->DeleteLocalRef(env, svc_name);
 	return result;
 }
 
@@ -1638,44 +1670,40 @@ bool ska_platform_clipboard_set_text(const char* text) {
 		return false;
 	}
 
-	// Get ClipboardManager
-	jclass activity_class = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
-	jmethodID get_system_service = (*env)->GetMethodID(env, activity_class,
-		"getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+	bool    ok          = false;
+	jstring svc_name    = NULL;
+	jobject cm          = NULL;
+	jstring label       = NULL;
+	jstring text_jstr   = NULL;
+	jobject clip_data   = NULL;
 
-	jstring service_name = (*env)->NewStringUTF(env, "clipboard");
-	jobject clipboard_manager = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context,
-		get_system_service, service_name);
-
-	if (!clipboard_manager) {
+	svc_name = (*env)->NewStringUTF(env, "clipboard");
+	cm = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context,
+		g_jni_cache.ctx_getSystemService, svc_name);
+	if (!cm) {
 		ska_set_error("ska_platform_clipboard_set_text: failed to get clipboard manager");
-		return false;
+		goto cleanup;
 	}
 
-	// Create ClipData
-	jclass clip_data_class = (*env)->FindClass(env, "android/content/ClipData");
-	jmethodID new_plain_text = (*env)->GetStaticMethodID(env, clip_data_class,
-		"newPlainText", "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;");
-
-	jstring label = (*env)->NewStringUTF(env, "text");
-	jstring text_string = (*env)->NewStringUTF(env, text);
-
-	jobject clip_data = (*env)->CallStaticObjectMethod(env, clip_data_class,
-		new_plain_text, label, text_string);
-
+	label     = (*env)->NewStringUTF(env, "text");
+	text_jstr = (*env)->NewStringUTF(env, text);
+	clip_data = (*env)->CallStaticObjectMethod(env, g_jni_cache.clip_data_class,
+		g_jni_cache.clip_data_newPlainText, label, text_jstr);
 	if (!clip_data) {
 		ska_set_error("ska_platform_clipboard_set_text: failed to create clip data");
-		return false;
+		goto cleanup;
 	}
 
-	// Set primary clip
-	jclass clipboard_class = (*env)->FindClass(env, "android/content/ClipboardManager");
-	jmethodID set_primary_clip = (*env)->GetMethodID(env, clipboard_class,
-		"setPrimaryClip", "(Landroid/content/ClipData;)V");
+	(*env)->CallVoidMethod(env, cm, g_jni_cache.clipboard_setPrimaryClip, clip_data);
+	ok = true;
 
-	(*env)->CallVoidMethod(env, clipboard_manager, set_primary_clip, clip_data);
-
-	return true;
+cleanup:
+	if (clip_data) (*env)->DeleteLocalRef(env, clip_data);
+	if (text_jstr) (*env)->DeleteLocalRef(env, text_jstr);
+	if (label)     (*env)->DeleteLocalRef(env, label);
+	if (cm)        (*env)->DeleteLocalRef(env, cm);
+	if (svc_name)  (*env)->DeleteLocalRef(env, svc_name);
+	return ok;
 }
 
 // ========== Asset I/O (Android) ==========
@@ -1832,10 +1860,17 @@ bool ska_android_content_read(const char* uri_str, void** out_data, size_t* out_
 	long file_size = ftell(file);
 	fseek(file, 0, SEEK_SET);
 
-	if (file_size <= 0) {
+	if (file_size < 0) {
 		ska_set_error("ska_android_content_read: Failed to get size for '%s'", uri_str);
 		fclose(file);
 		return false;
+	}
+
+	if (file_size == 0) {
+		fclose(file);
+		*out_data = NULL;
+		if (out_size) *out_size = 0;
+		return true;
 	}
 
 	void* data = ska_malloc((size_t)file_size);
@@ -1862,23 +1897,6 @@ bool ska_android_content_read(const char* uri_str, void** out_data, size_t* out_
 // ============================================================================
 // File Dialog
 // ============================================================================
-
-// Cached JNI references for file dialog
-static struct {
-	jclass    intent_class;
-	jmethodID intent_init;
-	jmethodID intent_setType;
-	jmethodID intent_addCategory;
-	jmethodID intent_putExtra_bool;
-	jclass    pm_class;
-	jmethodID pm_queryIntentActivities;
-	jmethodID activity_getPackageManager;
-	// SkAppResultFragment (headless fragment for receiving activity results)
-	jclass    fragment_class;
-	jmethodID fragment_launch;
-	bool      fragment_available;
-	bool      initialized;
-} g_file_dialog_jni = {0};
 
 // Pending file dialog state
 typedef struct {
@@ -1984,13 +2002,15 @@ bool ska_platform_file_dialog_available(ska_file_dialog_ type) {
 
 	// Set type to */* for general query
 	jstring type_str = (*env)->NewStringUTF(env, "*/*");
-	(*env)->CallObjectMethod(env, intent, g_file_dialog_jni.intent_setType, type_str);
+	jobject ret_type = (*env)->CallObjectMethod(env, intent, g_file_dialog_jni.intent_setType, type_str);
 	(*env)->DeleteLocalRef(env, type_str);
+	if (ret_type) (*env)->DeleteLocalRef(env, ret_type);
 
 	// Add CATEGORY_OPENABLE
 	jstring category_str = (*env)->NewStringUTF(env, "android.intent.category.OPENABLE");
-	(*env)->CallObjectMethod(env, intent, g_file_dialog_jni.intent_addCategory, category_str);
+	jobject ret_cat = (*env)->CallObjectMethod(env, intent, g_file_dialog_jni.intent_addCategory, category_str);
 	(*env)->DeleteLocalRef(env, category_str);
+	if (ret_cat) (*env)->DeleteLocalRef(env, ret_cat);
 
 	// Get PackageManager and query
 	jobject activity = (jobject)g_ska.android_context;
@@ -2011,6 +2031,7 @@ bool ska_platform_file_dialog_available(ska_file_dialog_ type) {
 		jmethodID size_method = (*env)->GetMethodID(env, list_class, "size", "()I");
 		int size = (*env)->CallIntMethod(env, resolve_list, size_method);
 		available = (size > 0);
+		(*env)->DeleteLocalRef(env, list_class);
 		(*env)->DeleteLocalRef(env, resolve_list);
 	}
 
@@ -2081,21 +2102,24 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 		mime_type = ska_filter_get_mime(&request->filters[0]);
 	}
 	jstring type_str = (*env)->NewStringUTF(env, mime_type);
-	(*env)->CallObjectMethod(env, intent, g_file_dialog_jni.intent_setType, type_str);
+	jobject ret = (*env)->CallObjectMethod(env, intent, g_file_dialog_jni.intent_setType, type_str);
 	(*env)->DeleteLocalRef(env, type_str);
+	if (ret) (*env)->DeleteLocalRef(env, ret);
 
 	// Add CATEGORY_OPENABLE for file intents (not folder)
 	if (request->type != ska_file_dialog_open_folder) {
 		jstring category_str = (*env)->NewStringUTF(env, "android.intent.category.OPENABLE");
-		(*env)->CallObjectMethod(env, intent, g_file_dialog_jni.intent_addCategory, category_str);
+		ret = (*env)->CallObjectMethod(env, intent, g_file_dialog_jni.intent_addCategory, category_str);
 		(*env)->DeleteLocalRef(env, category_str);
+		if (ret) (*env)->DeleteLocalRef(env, ret);
 	}
 
 	// Allow multiple selection if requested
 	if (request->allow_multiple && request->type == ska_file_dialog_open) {
 		jstring extra_str = (*env)->NewStringUTF(env, "android.intent.extra.ALLOW_MULTIPLE");
-		(*env)->CallObjectMethod(env, intent, g_file_dialog_jni.intent_putExtra_bool, extra_str, JNI_TRUE);
+		ret = (*env)->CallObjectMethod(env, intent, g_file_dialog_jni.intent_putExtra_bool, extra_str, JNI_TRUE);
 		(*env)->DeleteLocalRef(env, extra_str);
+		if (ret) (*env)->DeleteLocalRef(env, ret);
 	}
 
 	// Allocate result entry (must be done before launching activity so JNI callback can find it)
@@ -2133,14 +2157,6 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 	ska_log(ska_log_info, "File dialog launched (id=%u)", id);
 
 	return true;
-}
-
-// Called from ska_platform_pump_events - currently a no-op
-// Full implementation requires Java callback to set result
-static void ska_android_check_file_dialog(void) {
-	// Without Java helper, we can't receive activity results
-	// If dialog is active for too long without result, assume it was cancelled
-	// (This is a workaround - proper implementation needs Java integration)
 }
 
 // ============================================================================
@@ -2217,28 +2233,32 @@ static void ska_android_file_dialog_handle_result(
 				jobject cursor = (*env)->CallObjectMethod(env, resolver, cr_query,
 					parsed, projection, NULL, NULL, NULL);
 
-				if (cursor && !(*env)->ExceptionCheck(env)) {
-					if ((*env)->CallBooleanMethod(env, cursor, cur_move)) {
-						jint col = (*env)->CallIntMethod(env, cursor, cur_getIdx, col_name);
-						if (col >= 0) {
-							jstring name_jstr = (jstring)(*env)->CallObjectMethod(env, cursor, cur_getStr, col);
-							if (name_jstr) {
-								const char* name = (*env)->GetStringUTFChars(env, name_jstr, NULL);
-								if (name) {
-									// content://provider/doc/id#display_name.ext
-									size_t uri_len  = strlen(uri_utf);
-									size_t name_len = strlen(name);
-									path = (char*)ska_malloc(uri_len + 1 + name_len + 1);
-									if (path) {
-										memcpy(path, uri_utf, uri_len);
-										path[uri_len] = '#';
-										memcpy(path + uri_len + 1, name, name_len + 1);
+				if (cursor) {
+					if (!(*env)->ExceptionCheck(env)) {
+						if ((*env)->CallBooleanMethod(env, cursor, cur_move)) {
+							jint col = (*env)->CallIntMethod(env, cursor, cur_getIdx, col_name);
+							if (col >= 0) {
+								jstring name_jstr = (jstring)(*env)->CallObjectMethod(env, cursor, cur_getStr, col);
+								if (name_jstr) {
+									const char* name = (*env)->GetStringUTFChars(env, name_jstr, NULL);
+									if (name) {
+										// content://provider/doc/id#display_name.ext
+										size_t uri_len  = strlen(uri_utf);
+										size_t name_len = strlen(name);
+										path = (char*)ska_malloc(uri_len + 1 + name_len + 1);
+										if (path) {
+											memcpy(path, uri_utf, uri_len);
+											path[uri_len] = '#';
+											memcpy(path + uri_len + 1, name, name_len + 1);
+										}
+										(*env)->ReleaseStringUTFChars(env, name_jstr, name);
 									}
-									(*env)->ReleaseStringUTFChars(env, name_jstr, name);
+									(*env)->DeleteLocalRef(env, name_jstr);
 								}
-								(*env)->DeleteLocalRef(env, name_jstr);
 							}
 						}
+					} else {
+						(*env)->ExceptionClear(env);
 					}
 					(*env)->CallVoidMethod(env, cursor, cur_close);
 					(*env)->DeleteLocalRef(env, cursor);
@@ -2308,32 +2328,19 @@ ska_native_on_activity_result(
 // KVP Store (Android: SharedPreferences with Base64 encoding)
 // ============================================================================
 
-// JNI cache for kvpstore
-static struct {
-	jmethodID activity_getSharedPreferences;
-	jmethodID prefs_getString;
-	jmethodID prefs_edit;
-	jmethodID editor_putString;
-	jmethodID editor_remove;
-	jmethodID editor_apply;
-	jclass    base64_class;
-	jmethodID base64_encodeToString;
-	jmethodID base64_decode;
-	bool      initialized;
-} g_kvp_jni = {0};
-
 static bool ska_kvpstore_jni_init(void) {
 	if (g_kvp_jni.initialized) return true;
 
 	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
 	if (!env || !g_ska.android_context) return false;
 
-	// Activity.getSharedPreferences(String name, int mode)
-	jclass activity_class = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
-	g_kvp_jni.activity_getSharedPreferences = (*env)->GetMethodID(
-		env, activity_class, "getSharedPreferences",
+	// Context.getSharedPreferences(String name, int mode)
+	jclass ctx_class = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
+	g_kvp_jni.ctx_getSharedPreferences = (*env)->GetMethodID(
+		env, ctx_class, "getSharedPreferences",
 		"(Ljava/lang/String;I)Landroid/content/SharedPreferences;"
 	);
+	(*env)->DeleteLocalRef(env, ctx_class);
 
 	// SharedPreferences methods
 	jclass prefs_class = (*env)->FindClass(env, "android/content/SharedPreferences");
@@ -2345,6 +2352,7 @@ static bool ska_kvpstore_jni_init(void) {
 		env, prefs_class, "edit",
 		"()Landroid/content/SharedPreferences$Editor;"
 	);
+	(*env)->DeleteLocalRef(env, prefs_class);
 
 	// SharedPreferences.Editor methods
 	jclass editor_class = (*env)->FindClass(env, "android/content/SharedPreferences$Editor");
@@ -2359,6 +2367,7 @@ static bool ska_kvpstore_jni_init(void) {
 	g_kvp_jni.editor_apply = (*env)->GetMethodID(
 		env, editor_class, "apply", "()V"
 	);
+	(*env)->DeleteLocalRef(env, editor_class);
 
 	// Base64 for encoding binary data
 	jclass base64_local = (*env)->FindClass(env, "android/util/Base64");
@@ -2403,7 +2412,7 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 	// Get SharedPreferences
 	jstring prefs_name = (*env)->NewStringUTF(env, ska_kvpstore_get_app_name());
 	jobject prefs = (*env)->CallObjectMethod(env, activity,
-		g_kvp_jni.activity_getSharedPreferences, prefs_name, 0 /* MODE_PRIVATE */);
+		g_kvp_jni.ctx_getSharedPreferences, prefs_name, 0 /* MODE_PRIVATE */);
 
 	// Encode data to Base64
 	jbyteArray byte_array = (*env)->NewByteArray(env, (jsize)size);
@@ -2417,7 +2426,8 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 	// Save to SharedPreferences
 	jstring jkey = (*env)->NewStringUTF(env, key);
 	jobject editor = (*env)->CallObjectMethod(env, prefs, g_kvp_jni.prefs_edit);
-	(*env)->CallObjectMethod(env, editor, g_kvp_jni.editor_putString, jkey, encoded);
+	jobject editor_ret = (*env)->CallObjectMethod(env, editor, g_kvp_jni.editor_putString, jkey, encoded);
+	if (editor_ret) (*env)->DeleteLocalRef(env, editor_ret);
 	(*env)->CallVoidMethod(env, editor, g_kvp_jni.editor_apply);
 
 	// Cleanup local refs
@@ -2452,7 +2462,7 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 	// Get SharedPreferences
 	jstring prefs_name = (*env)->NewStringUTF(env, ska_kvpstore_get_app_name());
 	jobject prefs = (*env)->CallObjectMethod(env, activity,
-		g_kvp_jni.activity_getSharedPreferences, prefs_name, 0);
+		g_kvp_jni.ctx_getSharedPreferences, prefs_name, 0);
 
 	// Get stored string
 	jstring jkey = (*env)->NewStringUTF(env, key);
@@ -2512,12 +2522,13 @@ SKA_API bool ska_kvpstore_delete(const char* key) {
 	// Get SharedPreferences
 	jstring prefs_name = (*env)->NewStringUTF(env, ska_kvpstore_get_app_name());
 	jobject prefs = (*env)->CallObjectMethod(env, activity,
-		g_kvp_jni.activity_getSharedPreferences, prefs_name, 0);
+		g_kvp_jni.ctx_getSharedPreferences, prefs_name, 0);
 
 	// Remove key
 	jstring jkey = (*env)->NewStringUTF(env, key);
 	jobject editor = (*env)->CallObjectMethod(env, prefs, g_kvp_jni.prefs_edit);
-	(*env)->CallObjectMethod(env, editor, g_kvp_jni.editor_remove, jkey);
+	jobject editor_ret = (*env)->CallObjectMethod(env, editor, g_kvp_jni.editor_remove, jkey);
+	if (editor_ret) (*env)->DeleteLocalRef(env, editor_ret);
 	(*env)->CallVoidMethod(env, editor, g_kvp_jni.editor_apply);
 
 	// Cleanup

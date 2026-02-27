@@ -41,7 +41,7 @@ fi
 
 # Build configuration
 ABI="$TARGET_ABI"
-API_LEVEL="${ANDROID_API_LEVEL:-24}"
+API_LEVEL="${ANDROID_API_LEVEL:-32}"
 
 echo "========================================="
 echo "Building sk_app for Android"

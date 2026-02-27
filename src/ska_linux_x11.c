@@ -438,11 +438,8 @@ void ska_platform_window_raise(ska_window_t* window) {
 }
 
 void ska_platform_window_get_drawable_size(ska_window_t* window, int32_t* opt_out_width, int32_t* opt_out_height) {
-	// For X11, drawable size equals window size unless using high-DPI
-	window->drawable_width = window->width;
-	window->drawable_height = window->height;
-	(void)opt_out_width;
-	(void)opt_out_height;
+	if (opt_out_width)  *opt_out_width  = window->drawable_width;
+	if (opt_out_height) *opt_out_height = window->drawable_height;
 }
 
 float ska_platform_get_dpi_scale(const ska_window_t* window) {

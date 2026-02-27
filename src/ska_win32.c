@@ -238,8 +238,10 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 					event.window.window_id = window->id;
 					event.window.data1 = width;
 					event.window.data2 = height;
-					window->width = width;
+					window->width  = width;
 					window->height = height;
+					window->drawable_width  = width;
+					window->drawable_height = height;
 					ska_post_event(&event);
 				}
 			}
@@ -627,8 +629,10 @@ bool ska_platform_window_create(
 	// Get actual window position and size
 	RECT client_rect;
 	GetClientRect(window->hwnd, &client_rect);
-	window->width = client_rect.right - client_rect.left;
+	window->width  = client_rect.right - client_rect.left;
 	window->height = client_rect.bottom - client_rect.top;
+	window->drawable_width  = window->width;
+	window->drawable_height = window->height;
 
 	RECT window_rect;
 	GetWindowRect(window->hwnd, &window_rect);
@@ -744,11 +748,8 @@ void ska_platform_window_raise(ska_window_t* window) {
 }
 
 void ska_platform_window_get_drawable_size(ska_window_t* window, int32_t* opt_out_width, int32_t* opt_out_height) {
-	// For Win32, drawable size equals client size unless using high-DPI scaling
-	window->drawable_width = window->width;
-	window->drawable_height = window->height;
-	(void)opt_out_width;
-	(void)opt_out_height;
+	if (opt_out_width)  *opt_out_width  = window->drawable_width;
+	if (opt_out_height) *opt_out_height = window->drawable_height;
 }
 
 float ska_platform_get_dpi_scale(const ska_window_t* window) {
