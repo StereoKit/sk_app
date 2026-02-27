@@ -670,60 +670,179 @@ SKA_API void ska_android_on_window_resized(int32_t width, int32_t height) {
 // Input Helpers (private)
 // ============================================================================
 
-// Posts a touch/motion event. Action values match both NDK AMOTION_EVENT_ACTION_*
-// and Java MotionEvent.ACTION_*: 0=DOWN, 1=UP, 2=MOVE, 5=POINTER_DOWN, 6=POINTER_UP
-static bool ska_android_post_motion(int32_t action_masked, float x, float y) {
+// Posts a motion/touch/mouse event. Action values match both NDK
+// AMOTION_EVENT_ACTION_* and Java MotionEvent.ACTION_*. Both the NDK
+// standalone path and the JNI library path call this function so that all
+// input processing shares a single code path.
+static bool ska_android_post_motion(int32_t action_masked, int32_t source,
+	float x, float y, int32_t button_state, float scroll_x, float scroll_y)
+{
 	if (g_ska.window_count == 0 || !g_ska.windows[0]) return false;
 
 	ska_window_t *window = g_ska.windows[0];
+	int32_t ix = (int32_t)(x + 0.5f);
+	int32_t iy = (int32_t)(y + 0.5f);
 	ska_event_t ev = {0};
 	ev.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 
+	// Mouse scroll wheel
+	if (action_masked == AMOTION_EVENT_ACTION_SCROLL) {
+		ev.type = ska_event_mouse_wheel;
+		ev.mouse_wheel.window_id = window->id;
+		ev.mouse_wheel.x         = (int32_t)scroll_x;
+		ev.mouse_wheel.y         = (int32_t)scroll_y;
+		ev.mouse_wheel.precise_x = scroll_x;
+		ev.mouse_wheel.precise_y = scroll_y;
+
+		ska_post_event(&ev);
+		return true;
+	}
+
+	// Mouse button press (mice/trackpads). getButtonState() returns
+	// cumulative state, so we diff against the previous value.
+	if ((source & AINPUT_SOURCE_MOUSE) && action_masked == AMOTION_EVENT_ACTION_BUTTON_PRESS) {
+		int32_t newly_pressed = button_state & ~g_android_prev_button_state;
+		g_android_prev_button_state = button_state;
+
+		ska_mouse_button_ button = ska_android_map_button(newly_pressed);
+		if (!button) return true;
+
+		ev.type = ska_event_mouse_button_down;
+		ev.mouse_button.window_id = window->id;
+		ev.mouse_button.button    = button;
+		ev.mouse_button.pressed   = true;
+		ev.mouse_button.clicks    = 1;
+		ev.mouse_button.x         = ix;
+		ev.mouse_button.y         = iy;
+
+		g_ska.input_state.mouse_buttons |= (1 << (button - 1));
+
+		ska_post_event(&ev);
+		return true;
+	}
+
+	// Mouse button release
+	if ((source & AINPUT_SOURCE_MOUSE) && action_masked == AMOTION_EVENT_ACTION_BUTTON_RELEASE) {
+		int32_t released = g_android_prev_button_state & ~button_state;
+		g_android_prev_button_state = button_state;
+
+		ska_mouse_button_ button = ska_android_map_button(released);
+		if (!button) return true;
+
+		ev.type = ska_event_mouse_button_up;
+		ev.mouse_button.window_id = window->id;
+		ev.mouse_button.button    = button;
+		ev.mouse_button.pressed   = false;
+		ev.mouse_button.clicks    = 1;
+		ev.mouse_button.x         = ix;
+		ev.mouse_button.y         = iy;
+
+		g_ska.input_state.mouse_buttons &= ~(1 << (button - 1));
+
+		ska_post_event(&ev);
+		return true;
+	}
+
+	// Mouse hover motion (no button pressed)
+	if ((source & AINPUT_SOURCE_MOUSE) && action_masked == AMOTION_EVENT_ACTION_HOVER_MOVE) {
+		ev.type = ska_event_mouse_motion;
+		ev.mouse_motion.window_id = window->id;
+		ev.mouse_motion.x    = ix;
+		ev.mouse_motion.y    = iy;
+		ev.mouse_motion.xrel = ix - g_ska.input_state.mouse_x;
+		ev.mouse_motion.yrel = iy - g_ska.input_state.mouse_y;
+
+		g_ska.input_state.mouse_x    = ix;
+		g_ska.input_state.mouse_y    = iy;
+		g_ska.input_state.mouse_xrel = ev.mouse_motion.xrel;
+		g_ska.input_state.mouse_yrel = ev.mouse_motion.yrel;
+
+		ska_post_event(&ev);
+		return true;
+	}
+
+	// Touch / generic motion events
 	switch (action_masked) {
 		case AMOTION_EVENT_ACTION_DOWN:
 		case AMOTION_EVENT_ACTION_POINTER_DOWN:
+			// Send motion event first to update position
+			if (ix != g_ska.input_state.mouse_x || iy != g_ska.input_state.mouse_y) {
+				ev.type = ska_event_mouse_motion;
+				ev.mouse_motion.window_id = window->id;
+				ev.mouse_motion.x    = ix;
+				ev.mouse_motion.y    = iy;
+				ev.mouse_motion.xrel = ix - g_ska.input_state.mouse_x;
+				ev.mouse_motion.yrel = iy - g_ska.input_state.mouse_y;
+
+				g_ska.input_state.mouse_x    = ix;
+				g_ska.input_state.mouse_y    = iy;
+				g_ska.input_state.mouse_xrel = ev.mouse_motion.xrel;
+				g_ska.input_state.mouse_yrel = ev.mouse_motion.yrel;
+
+				ska_post_event(&ev);
+			}
+
+			// Then send button down
+			memset(&ev, 0, sizeof(ev));
+			ev.timestamp              = (uint32_t)ska_time_get_elapsed_ms();
 			ev.type                   = ska_event_mouse_button_down;
 			ev.mouse_button.window_id = window->id;
 			ev.mouse_button.button    = ska_mouse_button_left;
 			ev.mouse_button.pressed   = true;
 			ev.mouse_button.clicks    = 1;
-			ev.mouse_button.x         = (int32_t)x;
-			ev.mouse_button.y         = (int32_t)y;
+			ev.mouse_button.x         = ix;
+			ev.mouse_button.y         = iy;
 
 			g_ska.input_state.mouse_buttons |= (1 << (ska_mouse_button_left - 1));
-			g_ska.input_state.mouse_x = (int32_t)x;
-			g_ska.input_state.mouse_y = (int32_t)y;
 
 			ska_post_event(&ev);
 			return true;
 
 		case AMOTION_EVENT_ACTION_UP:
 		case AMOTION_EVENT_ACTION_POINTER_UP:
+			// Send motion event first to update position
+			if (ix != g_ska.input_state.mouse_x || iy != g_ska.input_state.mouse_y) {
+				ev.type = ska_event_mouse_motion;
+				ev.mouse_motion.window_id = window->id;
+				ev.mouse_motion.x    = ix;
+				ev.mouse_motion.y    = iy;
+				ev.mouse_motion.xrel = ix - g_ska.input_state.mouse_x;
+				ev.mouse_motion.yrel = iy - g_ska.input_state.mouse_y;
+
+				g_ska.input_state.mouse_x    = ix;
+				g_ska.input_state.mouse_y    = iy;
+				g_ska.input_state.mouse_xrel = ev.mouse_motion.xrel;
+				g_ska.input_state.mouse_yrel = ev.mouse_motion.yrel;
+
+				ska_post_event(&ev);
+			}
+
+			// Then send button up
+			memset(&ev, 0, sizeof(ev));
+			ev.timestamp              = (uint32_t)ska_time_get_elapsed_ms();
 			ev.type                   = ska_event_mouse_button_up;
 			ev.mouse_button.window_id = window->id;
 			ev.mouse_button.button    = ska_mouse_button_left;
 			ev.mouse_button.pressed   = false;
 			ev.mouse_button.clicks    = 1;
-			ev.mouse_button.x         = (int32_t)x;
-			ev.mouse_button.y         = (int32_t)y;
+			ev.mouse_button.x         = ix;
+			ev.mouse_button.y         = iy;
 
 			g_ska.input_state.mouse_buttons &= ~(1 << (ska_mouse_button_left - 1));
-			g_ska.input_state.mouse_x = (int32_t)x;
-			g_ska.input_state.mouse_y = (int32_t)y;
 
 			ska_post_event(&ev);
 			return true;
 
 		case AMOTION_EVENT_ACTION_MOVE:
-			ev.type                   = ska_event_mouse_motion;
+			ev.type = ska_event_mouse_motion;
 			ev.mouse_motion.window_id = window->id;
-			ev.mouse_motion.x         = (int32_t)x;
-			ev.mouse_motion.y         = (int32_t)y;
-			ev.mouse_motion.xrel      = (int32_t)x - g_ska.input_state.mouse_x;
-			ev.mouse_motion.yrel      = (int32_t)y - g_ska.input_state.mouse_y;
+			ev.mouse_motion.x    = ix;
+			ev.mouse_motion.y    = iy;
+			ev.mouse_motion.xrel = ix - g_ska.input_state.mouse_x;
+			ev.mouse_motion.yrel = iy - g_ska.input_state.mouse_y;
 
-			g_ska.input_state.mouse_x    = (int32_t)x;
-			g_ska.input_state.mouse_y    = (int32_t)y;
+			g_ska.input_state.mouse_x    = ix;
+			g_ska.input_state.mouse_y    = iy;
 			g_ska.input_state.mouse_xrel = ev.mouse_motion.xrel;
 			g_ska.input_state.mouse_yrel = ev.mouse_motion.yrel;
 
@@ -772,6 +891,9 @@ static struct {
 	jmethodID motion_get_action;
 	jmethodID motion_get_x;
 	jmethodID motion_get_y;
+	jmethodID motion_get_source;
+	jmethodID motion_get_button_state;
+	jmethodID motion_get_axis_value;
 	jclass    key_event_class;
 	jmethodID key_get_action;
 	jmethodID key_get_key_code;
@@ -783,15 +905,21 @@ static bool ska_jni_input_cache_init(JNIEnv *env) {
 
 	jclass me = (*env)->FindClass(env, "android/view/MotionEvent");
 	if (!me) return false;
-	g_jni_input_cache.motion_event_class = (jclass)(*env)->NewGlobalRef(env, me);
-	g_jni_input_cache.motion_get_action  = (*env)->GetMethodID(env, me, "getAction", "()I");
-	g_jni_input_cache.motion_get_x       = (*env)->GetMethodID(env, me, "getX",      "()F");
-	g_jni_input_cache.motion_get_y       = (*env)->GetMethodID(env, me, "getY",      "()F");
+	g_jni_input_cache.motion_event_class    = (jclass)(*env)->NewGlobalRef(env, me);
+	g_jni_input_cache.motion_get_action     = (*env)->GetMethodID(env, me, "getAction",      "()I");
+	g_jni_input_cache.motion_get_x          = (*env)->GetMethodID(env, me, "getX",           "()F");
+	g_jni_input_cache.motion_get_y          = (*env)->GetMethodID(env, me, "getY",           "()F");
+	g_jni_input_cache.motion_get_source     = (*env)->GetMethodID(env, me, "getSource",      "()I");
+	g_jni_input_cache.motion_get_button_state = (*env)->GetMethodID(env, me, "getButtonState", "()I");
+	g_jni_input_cache.motion_get_axis_value = (*env)->GetMethodID(env, me, "getAxisValue",   "(I)F");
 	(*env)->DeleteLocalRef(env, me);
 
 	if (!g_jni_input_cache.motion_get_action ||
 		!g_jni_input_cache.motion_get_x ||
-		!g_jni_input_cache.motion_get_y) {
+		!g_jni_input_cache.motion_get_y ||
+		!g_jni_input_cache.motion_get_source ||
+		!g_jni_input_cache.motion_get_button_state ||
+		!g_jni_input_cache.motion_get_axis_value) {
 		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
 		return false;
 	}
@@ -832,11 +960,14 @@ SKA_API bool ska_android_on_input(void *java_input_event) {
 	jobject event = (jobject)java_input_event;
 
 	if ((*env)->IsInstanceOf(env, event, g_jni_input_cache.motion_event_class)) {
-		int32_t action = (*env)->CallIntMethod(env, event, g_jni_input_cache.motion_get_action);
-		int32_t action_masked = action & 0xFF; // AMOTION_EVENT_ACTION_MASK
-		float x = (*env)->CallFloatMethod(env, event, g_jni_input_cache.motion_get_x);
-		float y = (*env)->CallFloatMethod(env, event, g_jni_input_cache.motion_get_y);
-		return ska_android_post_motion(action_masked, x, y);
+		int32_t action       = (*env)->CallIntMethod(env, event, g_jni_input_cache.motion_get_action);
+		float   x            = (*env)->CallFloatMethod(env, event, g_jni_input_cache.motion_get_x);
+		float   y            = (*env)->CallFloatMethod(env, event, g_jni_input_cache.motion_get_y);
+		int32_t source       = (*env)->CallIntMethod(env, event, g_jni_input_cache.motion_get_source);
+		int32_t button_state = (*env)->CallIntMethod(env, event, g_jni_input_cache.motion_get_button_state);
+		float   scroll_x     = (*env)->CallFloatMethod(env, event, g_jni_input_cache.motion_get_axis_value, 10); // AXIS_HSCROLL
+		float   scroll_y     = (*env)->CallFloatMethod(env, event, g_jni_input_cache.motion_get_axis_value, 9);  // AXIS_VSCROLL
+		return ska_android_post_motion(action & 0xFF, source, x, y, button_state, scroll_x, scroll_y);
 	}
 
 	if ((*env)->IsInstanceOf(env, event, g_jni_input_cache.key_event_class)) {
@@ -901,189 +1032,17 @@ static int32_t ska_android_handle_input(struct android_app* app, AInputEvent* in
 			AKeyEvent_getMetaState(input_event)) ? 1 : 0;
 
 	} else if (event_type == AINPUT_EVENT_TYPE_MOTION) {
-		ska_event_t event = {0};
-		event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
-		int32_t action = AMotionEvent_getAction(input_event);
-		int32_t action_masked = action & AMOTION_EVENT_ACTION_MASK;
-		int32_t source = AInputEvent_getSource(input_event);
+		int32_t action   = AMotionEvent_getAction(input_event);
+		int32_t source   = AInputEvent_getSource(input_event);
+		float   x        = AMotionEvent_getX(input_event, 0);
+		float   y        = AMotionEvent_getY(input_event, 0);
+		int32_t buttons  = AMotionEvent_getButtonState(input_event);
+		float   scroll_x = AMotionEvent_getAxisValue(input_event, AMOTION_EVENT_AXIS_HSCROLL, 0);
+		float   scroll_y = AMotionEvent_getAxisValue(input_event, AMOTION_EVENT_AXIS_VSCROLL, 0);
 
-		// Get coordinates - Android provides float precision
-		// Note: getX/getY return coordinates relative to the window
-		// getXOffset/getYOffset are NOT position offsets - they're historical offsets
-		// for batch events. We should use getX/getY directly for window-relative coords.
-		float x_float = AMotionEvent_getX(input_event, 0);
-		float y_float = AMotionEvent_getY(input_event, 0);
-
-		// Round to avoid cumulative positioning errors
-		int32_t x = (int32_t)(x_float + 0.5f);
-		int32_t y = (int32_t)(y_float + 0.5f);
-
-		// Handle mouse scroll wheel
-		if (action_masked == AMOTION_EVENT_ACTION_SCROLL) {
-			float vscroll = AMotionEvent_getAxisValue(input_event, AMOTION_EVENT_AXIS_VSCROLL, 0);
-			float hscroll = AMotionEvent_getAxisValue(input_event, AMOTION_EVENT_AXIS_HSCROLL, 0);
-
-			event.type = ska_event_mouse_wheel;
-			event.mouse_wheel.window_id = window->id;
-			event.mouse_wheel.x = (int32_t)hscroll;
-			event.mouse_wheel.y = (int32_t)vscroll;
-			event.mouse_wheel.precise_x = hscroll;
-			event.mouse_wheel.precise_y = vscroll;
-
-			ska_post_event(&event);
-			return 1;
-		}
-
-		// Handle mouse button events (for mice/trackpads connected to Android).
-		// getButtonState() returns cumulative state, so we diff against the
-		// previous value to determine which specific button changed.
-		if ((source & AINPUT_SOURCE_MOUSE) && action_masked == AMOTION_EVENT_ACTION_BUTTON_PRESS) {
-			int32_t button_state  = AMotionEvent_getButtonState(input_event);
-			int32_t newly_pressed = button_state & ~g_android_prev_button_state;
-			g_android_prev_button_state = button_state;
-
-			ska_mouse_button_ button = ska_android_map_button(newly_pressed);
-			if (!button) return 1;
-
-			event.type = ska_event_mouse_button_down;
-			event.mouse_button.window_id = window->id;
-			event.mouse_button.button = button;
-			event.mouse_button.pressed = true;
-			event.mouse_button.clicks = 1;
-			event.mouse_button.x = (int32_t)x;
-			event.mouse_button.y = (int32_t)y;
-
-			g_ska.input_state.mouse_buttons |= (1 << (button - 1));
-
-			ska_post_event(&event);
-			return 1;
-		}
-
-		if ((source & AINPUT_SOURCE_MOUSE) && action_masked == AMOTION_EVENT_ACTION_BUTTON_RELEASE) {
-			int32_t button_state = AMotionEvent_getButtonState(input_event);
-			int32_t released     = g_android_prev_button_state & ~button_state;
-			g_android_prev_button_state = button_state;
-
-			ska_mouse_button_ button = ska_android_map_button(released);
-			if (!button) return 1;
-
-			event.type = ska_event_mouse_button_up;
-			event.mouse_button.window_id = window->id;
-			event.mouse_button.button = button;
-			event.mouse_button.pressed = false;
-			event.mouse_button.clicks = 1;
-			event.mouse_button.x = (int32_t)x;
-			event.mouse_button.y = (int32_t)y;
-
-			g_ska.input_state.mouse_buttons &= ~(1 << (button - 1));
-
-			ska_post_event(&event);
-			return 1;
-		}
-
-		// Handle mouse hover motion (when no button is pressed)
-		if ((source & AINPUT_SOURCE_MOUSE) && action_masked == AMOTION_EVENT_ACTION_HOVER_MOVE) {
-			event.type = ska_event_mouse_motion;
-			event.mouse_motion.window_id = window->id;
-			event.mouse_motion.x = (int32_t)x;
-			event.mouse_motion.y = (int32_t)y;
-			event.mouse_motion.xrel = (int32_t)x - g_ska.input_state.mouse_x;
-			event.mouse_motion.yrel = (int32_t)y - g_ska.input_state.mouse_y;
-
-			g_ska.input_state.mouse_x = (int32_t)x;
-			g_ska.input_state.mouse_y = (int32_t)y;
-			g_ska.input_state.mouse_xrel = event.mouse_motion.xrel;
-			g_ska.input_state.mouse_yrel = event.mouse_motion.yrel;
-
-			ska_post_event(&event);
-			return 1;
-		}
-
-		switch (action_masked) {
-			case AMOTION_EVENT_ACTION_DOWN:
-				// Primary touch down = Mouse motion + Left button down
-				// First send motion event to update position
-				if ((int32_t)x != g_ska.input_state.mouse_x || (int32_t)y != g_ska.input_state.mouse_y) {
-					event.type = ska_event_mouse_motion;
-					event.mouse_motion.window_id = window->id;
-					event.mouse_motion.x = (int32_t)x;
-					event.mouse_motion.y = (int32_t)y;
-					event.mouse_motion.xrel = (int32_t)x - g_ska.input_state.mouse_x;
-					event.mouse_motion.yrel = (int32_t)y - g_ska.input_state.mouse_y;
-
-					g_ska.input_state.mouse_x = (int32_t)x;
-					g_ska.input_state.mouse_y = (int32_t)y;
-					g_ska.input_state.mouse_xrel = event.mouse_motion.xrel;
-					g_ska.input_state.mouse_yrel = event.mouse_motion.yrel;
-
-					ska_post_event(&event);
-				}
-
-				// Then send button down
-				event.type = ska_event_mouse_button_down;
-				event.mouse_button.window_id = window->id;
-				event.mouse_button.button = ska_mouse_button_left;
-				event.mouse_button.pressed = true;
-				event.mouse_button.clicks = 1;
-				event.mouse_button.x = (int32_t)x;
-				event.mouse_button.y = (int32_t)y;
-
-				g_ska.input_state.mouse_buttons |= (1 << (ska_mouse_button_left - 1));
-
-				ska_post_event(&event);
-				return 1;
-
-			case AMOTION_EVENT_ACTION_UP:
-				// Primary touch up = Mouse motion + Left button up
-				// First send motion event to update position
-				if ((int32_t)x != g_ska.input_state.mouse_x || (int32_t)y != g_ska.input_state.mouse_y) {
-					event.type = ska_event_mouse_motion;
-					event.mouse_motion.window_id = window->id;
-					event.mouse_motion.x = (int32_t)x;
-					event.mouse_motion.y = (int32_t)y;
-					event.mouse_motion.xrel = (int32_t)x - g_ska.input_state.mouse_x;
-					event.mouse_motion.yrel = (int32_t)y - g_ska.input_state.mouse_y;
-
-					g_ska.input_state.mouse_x = (int32_t)x;
-					g_ska.input_state.mouse_y = (int32_t)y;
-					g_ska.input_state.mouse_xrel = event.mouse_motion.xrel;
-					g_ska.input_state.mouse_yrel = event.mouse_motion.yrel;
-
-					ska_post_event(&event);
-				}
-
-				// Then send button up
-				event.type = ska_event_mouse_button_up;
-				event.mouse_button.window_id = window->id;
-				event.mouse_button.button = ska_mouse_button_left;
-				event.mouse_button.pressed = false;
-				event.mouse_button.clicks = 1;
-				event.mouse_button.x = (int32_t)x;
-				event.mouse_button.y = (int32_t)y;
-
-				g_ska.input_state.mouse_buttons &= ~(1 << (ska_mouse_button_left - 1));
-
-				ska_post_event(&event);
-				return 1;
-
-			case AMOTION_EVENT_ACTION_MOVE:
-				// Touch/Mouse move = Mouse motion
-				// Note: For touch, this only fires while touching. For mouse, this fires when dragging.
-				event.type = ska_event_mouse_motion;
-				event.mouse_motion.window_id = window->id;
-				event.mouse_motion.x = (int32_t)x;
-				event.mouse_motion.y = (int32_t)y;
-				event.mouse_motion.xrel = (int32_t)x - g_ska.input_state.mouse_x;
-				event.mouse_motion.yrel = (int32_t)y - g_ska.input_state.mouse_y;
-
-				g_ska.input_state.mouse_x = (int32_t)x;
-				g_ska.input_state.mouse_y = (int32_t)y;
-				g_ska.input_state.mouse_xrel = event.mouse_motion.xrel;
-				g_ska.input_state.mouse_yrel = event.mouse_motion.yrel;
-
-				ska_post_event(&event);
-				return 1;
-		}
+		return ska_android_post_motion(
+			action & AMOTION_EVENT_ACTION_MASK,
+			source, x, y, buttons, scroll_x, scroll_y) ? 1 : 0;
 	}
 
 	return 0;

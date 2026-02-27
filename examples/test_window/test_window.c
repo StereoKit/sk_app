@@ -750,7 +750,7 @@ static void test_mouse_warp(ska_window_t* window) {
 static void run_interactive_demo(ska_window_t* window) {
 	ska_log(ska_log_info, "\n=== Interactive Demo Mode ===");
 #ifdef SKA_PLATFORM_ANDROID
-	ska_log(ska_log_info, "Tap screen to exit, or use keys if available:");
+	ska_log(ska_log_info, "Auto-exiting in 5 seconds (or press ESC if keyboard available):");
 #else
 	ska_log(ska_log_info, "Press ESC to exit, other keys for various tests:");
 #endif
@@ -761,8 +761,17 @@ static void run_interactive_demo(ska_window_t* window) {
 
 	bool running = true;
 	uint32_t frame = 0;
+#ifdef SKA_PLATFORM_ANDROID
+	double demo_start = ska_time_get_elapsed_s();
+#endif
 
 	while (running) {
+#ifdef SKA_PLATFORM_ANDROID
+		if (ska_time_get_elapsed_s() - demo_start >= 5.0) {
+			running = false;
+			break;
+		}
+#endif
 		ska_event_t event;
 
 		while (ska_event_poll(&event)) {
@@ -848,12 +857,6 @@ static void run_interactive_demo(ska_window_t* window) {
 					}
 					ska_file_dialog_free_result(&event.file_dialog);
 					break;
-
-#ifdef SKA_PLATFORM_ANDROID
-				case ska_event_mouse_button_down:
-					running = false;
-					break;
-#endif
 
 				default:
 					break;
