@@ -140,7 +140,7 @@ elseif(ANDROID)
 		DEPENDS ${SKA_JAVA_SOURCES}
 		COMMAND ${CMAKE_COMMAND} -E make_directory ${SKA_JAR_BUILD_DIR}
 		COMMAND ${JAVAC}
-			--release 8
+			-source 8 -target 8
 			-classpath ${SKA_ANDROID_JAR}
 			-d ${SKA_JAR_BUILD_DIR}
 			${SKA_JAVA_SOURCES}
