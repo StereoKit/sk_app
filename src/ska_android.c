@@ -33,6 +33,7 @@ static int32_t g_android_prev_button_state = 0;
 static struct {
 	struct android_app* android_app;
 	void*               android_context; // raw jobject, NOT a global ref
+	void*               java_vm;         // JavaVM* provided via ska_android_set_context, or NULL
 	void*               native_window;   // ANativeWindow* delivered before window stub exists
 } g_android_early = {0};
 
@@ -209,24 +210,13 @@ static void ska_android_run_on_ui_thread(void (*fn)(void*), void *data) {
 		(jlong)(intptr_t)cb);
 }
 
-SKA_API void ska_android_set_context(void *context) {
-	JNIEnv *env = (JNIEnv*)ska_android_get_jni_env();
-	if (!env) {
-		// Pre-init: VM not yet discovered, stash raw pointer for
-		// ska_platform_init() to promote to a global ref later.
-		g_android_early.android_context = context;
+SKA_API void ska_android_set_context(void *context, void *java_vm) {
+	if (g_ska.initialized) {
+		ska_log(ska_log_warn, "ska_android_set_context called after initialization, ignoring. Call this before ska_init().");
 		return;
 	}
-
-	// Release previous global ref if set
-	if (g_ska.android_context) {
-		(*env)->DeleteGlobalRef(env, (jobject)g_ska.android_context);
-		g_ska.android_context = NULL;
-	}
-
-	if (context) {
-		g_ska.android_context = (*env)->NewGlobalRef(env, (jobject)context);
-	}
+	g_android_early.android_context = context;
+	g_android_early.java_vm         = java_vm;
 }
 
 static void ska_jni_cache_init(void) {
@@ -1052,21 +1042,31 @@ bool ska_platform_init(void) {
 	// Copy pre-init state into g_ska
 	g_ska.android_app = g_android_early.android_app;
 
-	// JNI_GetCreatedJavaVMs isn't a link-time symbol in the NDK.
-	// libnativehelper.so is in the public linker namespace on API 31+;
-	// on API 24-30 the dlopen may fail, so we fall back to RTLD_DEFAULT.
-	typedef jint (*pfn_JNI_GetCreatedJavaVMs)(JavaVM**, jsize, jsize*);
-	void *lib = dlopen("libnativehelper.so", RTLD_NOW);
-	pfn_JNI_GetCreatedJavaVMs getVMs = (pfn_JNI_GetCreatedJavaVMs)dlsym(
-		lib ? lib : RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
-	if (getVMs) {
-		JavaVM *vm    = NULL;
-		jsize   count = 0;
-		if (getVMs(&vm, 1, &count) == JNI_OK && count > 0)
-			g_ska.java_vm = vm;
+	// Prefer explicitly-provided JavaVM, then try android_app->activity->vm
+	// (standalone mode), then fall back to JNI_GetCreatedJavaVMs (API 31+).
+	if (g_android_early.java_vm) {
+		g_ska.java_vm = g_android_early.java_vm;
+	} else if (g_ska.android_app && g_ska.android_app->activity) {
+		g_ska.java_vm = g_ska.android_app->activity->vm;
+	} else {
+		// JNI_GetCreatedJavaVMs isn't a link-time symbol in the NDK.
+		// libnativehelper.so is in the public linker namespace on API 31+;
+		// on API 24-30 the dlopen may fail, so we fall back to RTLD_DEFAULT.
+		typedef jint (*pfn_JNI_GetCreatedJavaVMs)(JavaVM**, jsize, jsize*);
+		void *lib = dlopen("libnativehelper.so", RTLD_NOW);
+		pfn_JNI_GetCreatedJavaVMs getVMs = (pfn_JNI_GetCreatedJavaVMs)dlsym(
+			lib ? lib : RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
+		if (getVMs) {
+			JavaVM *vm    = NULL;
+			jsize   count = 0;
+			if (getVMs(&vm, 1, &count) == JNI_OK && count > 0)
+				g_ska.java_vm = vm;
+		}
+		if (!g_ska.java_vm) {
+			ska_log(ska_log_error, "JavaVM not found. In library mode, pass the JavaVM pointer to ska_android_set_context(), or ensure JNI_GetCreatedJavaVMs is available (API 31+).");
+			return false;
+		}
 	}
-	if (!g_ska.java_vm)
-		ska_log(ska_log_error, "Failed to discover JavaVM via JNI_GetCreatedJavaVMs");
 
 	// Initialize scancode table (needed in both modes)
 	ska_init_scancode_table();
@@ -1076,29 +1076,37 @@ bool ska_platform_init(void) {
 		// NativeActivity
 		g_ska.android_app->onAppCmd     = ska_android_handle_cmd;
 		g_ska.android_app->onInputEvent = ska_android_handle_input;
-		ska_android_set_context(g_ska.android_app->activity->clazz);
-	} else if (g_android_early.android_context) {
-		// Library mode: promote raw context pointer to a JNI global ref
-		ska_android_set_context(g_android_early.android_context);
-		g_android_early.android_context = NULL;
+		g_android_early.android_context = g_ska.android_app->activity->clazz;
 	}
+
+	// In library mode, a Context is required for JNI features.
+	if (!g_ska.android_app && !g_android_early.android_context) {
+		ska_log(ska_log_error, "Android library mode requires a Context. Call ska_android_set_context() before ska_init().");
+		return false;
+	}
+
+	// Promote the raw context pointer to a JNI global ref. At this point
+	// the context is guaranteed set — standalone from activity->clazz,
+	// library mode from ska_android_set_context().
+	JNIEnv *env = (JNIEnv*)ska_android_get_jni_env();
+	g_ska.android_context = (*env)->NewGlobalRef(env, (jobject)g_android_early.android_context);
+	g_android_early.android_context = NULL;
 
 	// Cache JNI method/field IDs for window management (needs activity set)
 	ska_jni_cache_init();
 
 	// Set up AAssetManager — standalone gets it from the glue struct,
 	// library mode extracts it from the Context via JNI.
-	if (g_ska.android_app && g_ska.android_app->activity &&
+	if (g_ska.android_app &&
+		g_ska.android_app->activity &&
 	    g_ska.android_app->activity->assetManager) {
 		g_ska.asset_manager = g_ska.android_app->activity->assetManager;
 	} else if (g_ska.android_context) {
 		JNIEnv *env = (JNIEnv*)ska_android_get_jni_env();
 		if (env) {
-			jclass    ctx_class = (*env)->GetObjectClass(env, (jobject)g_ska.android_context);
-			jmethodID getAssets = (*env)->GetMethodID(env, ctx_class, "getAssets",
-				"()Landroid/content/res/AssetManager;");
-			jobject java_am = (*env)->CallObjectMethod(env,
-				(jobject)g_ska.android_context, getAssets);
+			jclass    ctx_class = (*env)->GetObjectClass  (env, (jobject)g_ska.android_context);
+			jmethodID getAssets = (*env)->GetMethodID     (env, ctx_class, "getAssets", "()Landroid/content/res/AssetManager;");
+			jobject   java_am   = (*env)->CallObjectMethod(env, (jobject)g_ska.android_context, getAssets);
 			if (java_am) {
 				g_ska.asset_manager = AAssetManager_fromJava(env, java_am);
 				(*env)->DeleteLocalRef(env, java_am);
@@ -1141,13 +1149,16 @@ void ska_platform_shutdown(void) {
 		memset(&g_kvp_jni, 0, sizeof(g_kvp_jni));
 	}
 
+	// Release the Context global ref
+	if (env && g_ska.android_context) {
+		(*env)->DeleteGlobalRef(env, (jobject)g_ska.android_context);
+		g_ska.android_context = NULL;
+	}
+
 	if (g_ska.android_app) {
 		g_ska.android_app->onAppCmd     = NULL;
 		g_ska.android_app->onInputEvent = NULL;
 	}
-
-	// Release the Activity global ref
-	ska_android_set_context(NULL);
 
 	ska_log(ska_log_info, "Android platform shutdown");
 }

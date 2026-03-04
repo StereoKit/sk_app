@@ -766,13 +766,14 @@ SKA_API void* ska_linux_get_wayland_display(void);
 // @param app android_app* from android_native_app_glue (cast to void*)
 SKA_API void ska_android_set_app(void* app);
 
-// Set Android Context for JNI operations (library mode).
+// Set Android Context and optional JavaVM for JNI operations (library mode).
 // Accepts any Context subclass: Activity, Service, Application, etc.
 // In standalone mode this is called automatically from the glue Activity.
 // In library mode the host must call this before ska_init().
 //
 // @param context jobject for any android.content.Context (cast to void*)
-SKA_API void ska_android_set_context(void* context);
+// @param java_vm JavaVM* (cast to void*), or NULL to use auto-discovery
+SKA_API void ska_android_set_context(void* context, void* java_vm);
 
 // Get the JavaVM pointer for JNI operations.
 // Uses JNI_GetCreatedJavaVMs() internally — works in both standalone and library mode.

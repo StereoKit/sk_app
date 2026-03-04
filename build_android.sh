@@ -58,32 +58,25 @@ cmake -B $BUILD_DIR \
 	-DANDROID_ABI=$ABI \
 	-DANDROID_PLATFORM=android-$API_LEVEL \
 	-DCMAKE_BUILD_TYPE=Release \
-	-DANDROID_STL=c++_shared
+	-DANDROID_STL=c++_static
 
 # Build
 cmake --build $BUILD_DIR -j$(nproc)
 
-# Build APK
+# Show results
+APK_COUNT=0
 echo "========================================="
-echo "Building APK..."
-echo "========================================="
-cmake --build $BUILD_DIR --target simple_window-apk
+for apk in $(find $BUILD_DIR/examples -name "*.apk" 2>/dev/null); do
+	APK_COUNT=$((APK_COUNT + 1))
+	name=$(basename "$apk" .apk)
+	echo "APK built: $(ls -lh "$apk" | awk '{print $5}') $apk"
+	echo "  adb install -r $apk"
+	echo "  cmake --build $BUILD_DIR --target ${name}-run"
+	echo ""
+done
 
-# Show result
-if [ -f "$BUILD_DIR/examples/simple_window/simple_window.apk" ]; then
-	echo "========================================="
-	echo "SUCCESS! APK built:"
-	echo "$BUILD_DIR/examples/simple_window/simple_window.apk"
-	ls -lh "$BUILD_DIR/examples/simple_window/simple_window.apk"
-	echo "========================================="
-	echo ""
-	echo "To install and run:"
-	echo "  adb install -r $BUILD_DIR/examples/simple_window/simple_window.apk"
-	echo "  adb shell am start -n net.stereokit.simple_window/net.stereokit.sk_app.SkAppActivity"
-	echo ""
-	echo "Or use the convenience target:"
-	echo "  cmake --build $BUILD_DIR --target simple_window-run"
-else
-	echo "Error: APK not found!"
+if [ "$APK_COUNT" -eq 0 ]; then
+	echo "Error: No APKs found!"
 	exit 1
 fi
+echo "========================================="
