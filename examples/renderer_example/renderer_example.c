@@ -273,10 +273,42 @@ int32_t main(int32_t argc, char** argv) {
 					running = false;
 					break;
 
-				case ska_event_window_resized:
-					printf("[EVENT] Window resized to %dx%d\n", event.window.data1, event.window.data2);
-					skr_surface_resize(&surface);
+				case ska_event_window_hidden:
+					// Native window destroyed (screen off, backgrounded).
+					// The VkSurfaceKHR is now invalid — stop rendering.
+					printf("[EVENT] Window hidden — suspending rendering\n");
+					if (skr_get_vk_device()) vkDeviceWaitIdle(skr_get_vk_device());
+					skr_tex_destroy(&depth_buffer);
+					skr_surface_destroy(&surface);
+					break;
+
+				case ska_event_window_shown:
+					// New native window available — recreate Vulkan surface.
+					// Skip the initial shown event: the surface was already
+					// created during startup.
+					if (skr_surface_is_valid(&surface)) break;
+					printf("[EVENT] Window shown — recreating surface\n");
+					vk_surface = VK_NULL_HANDLE;
+					if (!ska_vk_create_surface(window, skr_get_vk_instance(), &vk_surface)) {
+						fprintf(stderr, "Failed to recreate Vulkan surface\n");
+						running = false;
+						break;
+					}
+					if (skr_surface_create(vk_surface, &surface) != skr_err_success) {
+						fprintf(stderr, "Failed to recreate skr_surface\n");
+						vkDestroySurfaceKHR(skr_get_vk_instance(), vk_surface, NULL);
+						running = false;
+						break;
+					}
 					recreate_depth_buffer(&depth_buffer, &surface);
+					break;
+
+				case ska_event_window_resized:
+					// Don't call skr_surface_resize here — let Vulkan
+					// signal VK_SUBOPTIMAL / VK_ERROR_OUT_OF_DATE via
+					// skr_acquire_needs_resize instead. Android events
+					// can arrive before the Vulkan surface has settled.
+					printf("[EVENT] Window resized to %dx%d\n", event.window.data1, event.window.data2);
 					break;
 
 				case ska_event_key_down:
@@ -322,6 +354,12 @@ int32_t main(int32_t argc, char** argv) {
 				default:
 					break;
 			}
+		}
+
+		// Skip rendering when the native window is gone (screen off, etc.)
+		if (!skr_surface_is_valid(&surface)) {
+			ska_time_sleep(16);
+			continue;
 		}
 
 		// Calculate time for animation
@@ -378,27 +416,20 @@ int32_t main(int32_t argc, char** argv) {
 		skr_acquire_ acquire_result = skr_surface_next_tex(&surface, &render_target);
 
 		if (acquire_result == skr_acquire_success && render_target) {
-			// Begin render pass with color and depth
-			skr_vec4_t clear_color = {0.1f, 0.1f, 0.2f, 1.0f};
-			skr_renderer_begin_pass(
-				render_target,
-				&depth_buffer,
-				NULL,
-				skr_clear_all,
-				clear_color,
-				1.0f,
-				0
-			);
-
-			// Set viewport
-			skr_renderer_set_viewport((skr_rect_t ){0, 0, (float)size.x, (float)size.y});
-			skr_renderer_set_scissor ((skr_recti_t){0, 0, size.x, size.y});
-
-			// Draw the render list
-			skr_renderer_draw(&render_list, &sys_buffer, sizeof(system_buffer_t), sys_buffer.view_count);
-
-			// End pass
-			skr_renderer_end_pass();
+			// Set up and submit render pass
+			skr_pass_t pass = {
+				.color            = render_target,
+				.depth            = &depth_buffer,
+				.clear            = skr_clear_all,
+				.clear_color      = {0.1f, 0.1f, 0.2f, 1.0f},
+				.clear_depth      = 1.0f,
+				.viewport         = {0, 0, (float)size.x, (float)size.y},
+				.scissor          = {0, 0, size.x, size.y},
+				.view_count       = sys_buffer.view_count,
+				.views_correlated = true,
+			};
+			skr_pass_add_draw(&pass, &render_list, &sys_buffer, sizeof(system_buffer_t));
+			skr_pass_submit(&pass);
 
 			// End frame with surface synchronization
 			skr_surface_t* surfaces[] = {&surface};

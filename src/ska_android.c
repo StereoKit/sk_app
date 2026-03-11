@@ -988,7 +988,10 @@ static void ska_android_handle_cmd(struct android_app* app, int32_t cmd) {
 			break;
 
 		case APP_CMD_WINDOW_RESIZED:
-		case APP_CMD_CONFIG_CHANGED:
+		case APP_CMD_CONTENT_RECT_CHANGED:
+			// CONFIG_CHANGED is intentionally excluded: it fires before
+			// the ANativeWindow buffer is resized, so getWidth/Height
+			// returns stale (pre-rotation) dimensions.
 			if (app->window && g_ska.window_count > 0)
 				ska_android_on_window_resized(ANativeWindow_getWidth(app->window), ANativeWindow_getHeight(app->window));
 			break;

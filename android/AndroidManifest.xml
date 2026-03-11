@@ -20,7 +20,7 @@
 		<activity
 			android:name="android.app.NativeActivity"
 			android:label="@string/app_name"
-			android:configChanges="orientation|keyboardHidden|screenSize"
+			android:configChanges="keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize"
 			android:exported="true">
 
 			<meta-data android:name="android.app.lib_name" android:value="@APK_LIB_NAME@" />

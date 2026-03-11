@@ -1,23 +1,5 @@
 # Renderer Example (requires Vulkan and sk_renderer)
 
-include(FetchContent)
-
-###############################################################################
-# sk_renderer dependency (must come first to get skshaderc)
-###############################################################################
-
-message(STATUS "Fetching sk_renderer...")
-
-set(SKR_BUILD_EXAMPLES  OFF CACHE BOOL "Disable sk_renderer examples" FORCE)
-set(SKR_BUILD_SKSHADERC ON  CACHE BOOL "Enable shader compilation" FORCE)
-FetchContent_Declare(
-	sk_renderer
-	GIT_REPOSITORY https://github.com/StereoKit/sk_renderer.git
-	GIT_TAG        ac7e975dba44ff25411c746c65770e5e0354b2ef
-	GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(sk_renderer)
-
 ###############################################################################
 # App definition
 ###############################################################################

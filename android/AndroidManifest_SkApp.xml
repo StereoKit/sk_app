@@ -29,7 +29,7 @@
 			android:name="net.stereokit.sk_app.SkAppActivity"
 			android:label="@string/app_name"
 			android:theme="@android:style/Theme.DeviceDefault"
-			android:configChanges="orientation|keyboardHidden|screenSize"
+			android:configChanges="keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize"
 			android:exported="true">
 
 			<meta-data android:name="android.app.lib_name" android:value="@APK_LIB_NAME@" />

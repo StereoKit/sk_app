@@ -199,6 +199,34 @@ int32_t main(int argc, char** argv) {
 					running = false;
 					break;
 
+				case ska_event_window_hidden:
+					// Native window destroyed (screen off, backgrounded).
+					// The VkSurfaceKHR is now invalid — stop rendering.
+					printf("[EVENT] Window hidden — suspending rendering\n");
+					if (skr_get_vk_device()) vkDeviceWaitIdle(skr_get_vk_device());
+					skr_surface_destroy(&surface);
+					break;
+
+				case ska_event_window_shown:
+					// New native window available — recreate Vulkan surface.
+					// Skip the initial shown event: the surface was already
+					// created during startup.
+					if (skr_surface_is_valid(&surface)) break;
+					printf("[EVENT] Window shown — recreating surface\n");
+					vk_surface = VK_NULL_HANDLE;
+					if (!ska_vk_create_surface(window, skr_get_vk_instance(), &vk_surface)) {
+						fprintf(stderr, "Failed to recreate Vulkan surface\n");
+						running = false;
+						break;
+					}
+					if (skr_surface_create(vk_surface, &surface) != skr_err_success) {
+						fprintf(stderr, "Failed to recreate skr_surface\n");
+						vkDestroySurfaceKHR(skr_get_vk_instance(), vk_surface, NULL);
+						running = false;
+						break;
+					}
+					break;
+
 				case ska_event_window_resized:
 					printf("[EVENT] Window resized to %dx%d\n", event.window.data1, event.window.data2);
 					skr_surface_resize(&surface);
@@ -213,6 +241,12 @@ int32_t main(int argc, char** argv) {
 				default:
 					break;
 			}
+		}
+
+		// Skip rendering when the native window is gone (screen off, etc.)
+		if (!skr_surface_is_valid(&surface)) {
+			ska_time_sleep(16);
+			continue;
 		}
 
 		// Start ImGui frame
@@ -300,7 +334,9 @@ int32_t main(int argc, char** argv) {
 				skr_clear_all,
 				skr_clear_color,
 				1.0f,
-				0
+				0,
+				0x1,
+				0x1
 			);
 
 			// Set viewport
