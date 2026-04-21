@@ -919,6 +919,13 @@ SKA_API bool ska_file_read_text(const char* filename, char** out_text);
 // @return true on success, false on failure (check ska_error_get())
 SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out_size);
 
+// Get the size of an asset in bytes without reading its contents.
+// Follows the same lookup order as ska_asset_read.
+//
+// @param asset_name Asset path relative to assets folder (UTF-8)
+// @return Size in bytes, or 0 if the asset is not found or empty.
+SKA_API size_t ska_asset_size(const char* asset_name);
+
 // Read asset file into a null-terminated string.
 // Calls ska_asset_read() then reallocs to add '\0' terminator.
 // Caller must free the returned string with ska_file_free_data().

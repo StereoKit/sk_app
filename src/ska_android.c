@@ -1743,6 +1743,23 @@ SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out
 	return true;
 }
 
+SKA_API size_t ska_asset_size(const char* asset_name) {
+	if (!asset_name)            return 0;
+	if (!g_ska.asset_manager)   return 0;
+
+	AAssetManager* asset_manager = (AAssetManager*)g_ska.asset_manager;
+
+	// AASSET_MODE_UNKNOWN is cheapest — we don't need the buffer, just the
+	// length.
+	AAsset* asset = AAssetManager_open(asset_manager, asset_name, AASSET_MODE_UNKNOWN);
+	if (!asset) return 0;
+
+	off_t asset_length = AAsset_getLength(asset);
+	AAsset_close(asset);
+
+	return asset_length > 0 ? (size_t)asset_length : 0;
+}
+
 SKA_API bool ska_asset_read_text(const char* asset_name, char** out_text) {
 	if (!asset_name) {
 		ska_set_error("ska_asset_read_text: NULL asset_name");

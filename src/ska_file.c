@@ -603,16 +603,46 @@ SKA_API bool ska_asset_read(const char* asset_name, void** out_data, size_t* out
 		return result;
 	}
 
-	// Try "assets/" as fallback
+#ifndef SKA_PLATFORM_WIN32
+	// Try "assets/" as fallback on case-sensitive filesystems. Windows is
+	// case-insensitive, so the "Assets/" check above already covered this.
 	snprintf(path, 8 + name_len + 1, "assets/%s", asset_name);
 	if (ska_file_exists(path)) {
 		bool result = ska_file_read(path, out_data, out_size);
 		ska_free(path);
 		return result;
 	}
+#endif
 
 	ska_free(path);
 	return false;
+}
+
+SKA_API size_t ska_asset_size(const char* asset_name) {
+	if (!asset_name) return 0;
+
+	size_t name_len = strlen(asset_name);
+	char*  path     = (char*)ska_malloc(8 + name_len + 1);
+	if (!path) return 0;
+
+	snprintf(path, 8 + name_len + 1, "Assets/%s", asset_name);
+	if (ska_file_exists(path)) {
+		size_t result = ska_file_size(path);
+		ska_free(path);
+		return result;
+	}
+
+#ifndef SKA_PLATFORM_WIN32
+	snprintf(path, 8 + name_len + 1, "assets/%s", asset_name);
+	if (ska_file_exists(path)) {
+		size_t result = ska_file_size(path);
+		ska_free(path);
+		return result;
+	}
+#endif
+
+	ska_free(path);
+	return 0;
 }
 
 SKA_API bool ska_asset_read_text(const char* asset_name, char** out_text) {
