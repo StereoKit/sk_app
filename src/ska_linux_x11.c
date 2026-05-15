@@ -113,50 +113,66 @@ bool ska_platform_init(void) {
 	setlocale(LC_ALL, "");
 	XSetLocaleModifiers("");
 
-	g_ska.x_display = XOpenDisplay(NULL);
-	if (!g_ska.x_display) {
+	ska_init_scancode_table();
+
+	// XWayland detection is just an env var check; affects mouse-warp workarounds
+	// applied later inside windowing code.
+	g_ska.is_xwayland = getenv("WAYLAND_DISPLAY") != NULL;
+
+	g_ska.cached_dpi_scale = 0.0f;
+
+	// Display, atoms, XIM, and root-window event selection are deferred to
+	// ska_linux_ensure_x_display so headless callers (CI, library use without a
+	// window) can succeed at ska_init.
+	return true;
+}
+
+// Lazily opens the X11 display and per-display state (atoms, XIM, Xrm).
+// Idempotent on success: once g_ska.x_display is set, returns true without
+// side effects. Failures are not memoized — each call with no X server
+// re-runs XOpenDisplay and re-sets the error. Only ska_platform_window_create
+// triggers this today; window-bound APIs reach a display through that path.
+static bool ska_linux_ensure_x_display(void) {
+	if (g_ska.x_display) {
+		return true;
+	}
+
+	Display* display = XOpenDisplay(NULL);
+	if (!display) {
 		ska_set_error("Failed to open X11 display");
 		return false;
 	}
 
-	g_ska.x_screen = DefaultScreen(g_ska.x_display);
-	g_ska.x_root = RootWindow(g_ska.x_display, g_ska.x_screen);
+	g_ska.x_display = display;
+	g_ska.x_screen  = DefaultScreen(display);
+	g_ska.x_root    = RootWindow(display, g_ska.x_screen);
 
-	// Initialize input method
-	g_ska.xim = XOpenIM(g_ska.x_display, NULL, NULL, NULL);
+	g_ska.xim = XOpenIM(display, NULL, NULL, NULL);
 	if (!g_ska.xim) {
 		ska_log(ska_log_warn, "Failed to open X Input Method");
 	}
 
-	// Initialize Xrm database (required before using XrmGetResource for DPI queries)
+	// Required before any XrmGetResource call (DPI queries).
 	XrmInitialize();
 
-	// Get WM atoms
-	g_ska.wm_protocols                = XInternAtom(g_ska.x_display, "WM_PROTOCOLS", False);
-	g_ska.wm_delete_window            = XInternAtom(g_ska.x_display, "WM_DELETE_WINDOW", False);
-	g_ska.net_wm_state                = XInternAtom(g_ska.x_display, "_NET_WM_STATE", False);
-	g_ska.net_wm_state_fullscreen     = XInternAtom(g_ska.x_display, "_NET_WM_STATE_FULLSCREEN", False);
-	g_ska.net_wm_state_maximized_vert = XInternAtom(g_ska.x_display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
-	g_ska.net_wm_state_maximized_horz = XInternAtom(g_ska.x_display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
-	g_ska.resource_manager            = XInternAtom(g_ska.x_display, "RESOURCE_MANAGER", False);
+	g_ska.wm_protocols                = XInternAtom(display, "WM_PROTOCOLS", False);
+	g_ska.wm_delete_window            = XInternAtom(display, "WM_DELETE_WINDOW", False);
+	g_ska.net_wm_state                = XInternAtom(display, "_NET_WM_STATE", False);
+	g_ska.net_wm_state_fullscreen     = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False);
+	g_ska.net_wm_state_maximized_vert = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+	g_ska.net_wm_state_maximized_horz = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+	g_ska.resource_manager            = XInternAtom(display, "RESOURCE_MANAGER", False);
 
-	// Watch root window for property changes (for DPI change detection via xrdb)
-	XSelectInput(g_ska.x_display, g_ska.x_root, PropertyChangeMask);
-
-	// Cache initial DPI scale
-	g_ska.cached_dpi_scale = 0.0f; // Will be set on first window creation
-
-	// Initialize scancode table
-	ska_init_scancode_table();
-
-	// Detect XWayland (X11 running on Wayland compositor)
-	// This affects mouse warp behavior workarounds
-	g_ska.is_xwayland = getenv("WAYLAND_DISPLAY") != NULL;
+	// Watch root for RESOURCE_MANAGER property changes (xrdb-driven DPI changes).
+	XSelectInput(display, g_ska.x_root, PropertyChangeMask);
 
 	return true;
 }
 
 void ska_platform_shutdown(void) {
+	// Teardown is conditional: ska_linux_ensure_x_display may never have been
+	// called (headless run), in which case xim/display are NULL and there is
+	// nothing X11-side to release.
 	if (g_ska.xim) {
 		XCloseIM(g_ska.xim);
 		g_ska.xim = NULL;
@@ -175,6 +191,12 @@ bool ska_platform_window_create(
 	int32_t w, int32_t h,
 	uint32_t flags
 ) {
+	// First windowing call wins the right to fail loudly if there's no X server;
+	// later calls reuse the already-opened display.
+	if (!ska_linux_ensure_x_display()) {
+		return false;
+	}
+
 	// Set window attributes
 	XSetWindowAttributes wa = {0};
 	wa.event_mask = KeyPressMask | KeyReleaseMask |
@@ -550,6 +572,14 @@ void ska_platform_set_cursor(ska_system_cursor_ cursor) {
 		return;
 	}
 
+	// No-op when no display has been opened (headless run, no windows).
+	// We don't latch the requested cursor: with no windows there's nothing to
+	// apply it to later anyway, and ska_platform_show_cursor's restore path
+	// also bails when there's no display.
+	if (!g_ska.x_display) {
+		return;
+	}
+
 	if (g_x_cursors[cursor] == None) {
 		// Try themed cursor first
 		g_x_cursors[cursor] = XcursorLibraryLoadCursor(g_ska.x_display, xcursor_names[cursor]);
@@ -573,6 +603,10 @@ void ska_platform_set_cursor(ska_system_cursor_ cursor) {
 }
 
 void ska_platform_show_cursor(bool show) {
+	if (!g_ska.x_display) {
+		return;
+	}
+
 	if (show) {
 		// Restore the current cursor (don't use XUndefineCursor which resets to parent's cursor)
 		for (uint32_t i = 0; i < SKA_MAX_WINDOWS; i++) {
@@ -607,6 +641,13 @@ bool ska_platform_set_relative_mouse_mode(bool enabled) {
 }
 
 void ska_platform_pump_events(void) {
+	// File-dialog subprocesses (zenity/kdialog) run independent of our X
+	// connection, so they're still polled in headless runs.
+	if (!g_ska.x_display) {
+		ska_linux_check_file_dialog();
+		return;
+	}
+
 	while (XPending(g_ska.x_display)) {
 		XEvent xev;
 		XNextEvent(g_ska.x_display, &xev);
