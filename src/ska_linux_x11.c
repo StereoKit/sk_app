@@ -10,6 +10,7 @@
 #include <X11/keysym.h>
 #include <X11/Xresource.h>
 #include <X11/extensions/Xfixes.h>
+#include <X11/XKBlib.h>
 #include <locale.h>
 #include <stdlib.h>
 #include <sys/select.h>
@@ -146,6 +147,17 @@ static bool ska_linux_ensure_x_display(void) {
 	g_ska.x_display = display;
 	g_ska.x_screen  = DefaultScreen(display);
 	g_ska.x_root    = RootWindow(display, g_ska.x_screen);
+
+	// Suppress X11's synthetic KeyRelease that precedes every auto-repeat
+	// KeyPress while a key is held. Without this, held-key polling alternates
+	// between "pressed" and "released" at the X server's auto-repeat rate
+	// (~25-30 Hz) — held movement keys produce stuttery half-rate motion
+	// because half of the sk_steps observe the key as briefly released.
+	// XKB has supported detectable auto-repeat since the late 90s; the
+	// supported_rtrn out-param is checked for completeness but a False from
+	// it just means we fall back to the historical noisy behavior.
+	Bool xkb_detectable_supported = False;
+	XkbSetDetectableAutoRepeat(display, True, &xkb_detectable_supported);
 
 	g_ska.xim = XOpenIM(display, NULL, NULL, NULL);
 	if (!g_ska.xim) {
@@ -640,6 +652,28 @@ bool ska_platform_set_relative_mouse_mode(bool enabled) {
 	return true;
 }
 
+typedef struct {
+	const XEvent* release;
+	bool          found;
+} ska_x11_keyrepeat_check_t;
+
+// Predicate for XCheckIfEvent. Always returns False so the matched event
+// stays in the queue (we want to consume the paired KeyPress normally on
+// the next pump iteration). XCheckIfEvent walks the entire queue calling
+// the predicate on each event, so an interleaved MotionNotify or Expose
+// between the release and its paired press will not hide the match.
+static Bool ska_x11_keyrepeat_predicate(Display* display, XEvent* peek, XPointer arg) {
+	(void)display;
+	ska_x11_keyrepeat_check_t* d = (ska_x11_keyrepeat_check_t*)arg;
+	if (peek->type            == KeyPress                          &&
+	    peek->xkey.window     == d->release->xkey.window           &&
+	    peek->xkey.keycode    == d->release->xkey.keycode          &&
+	    peek->xkey.time - d->release->xkey.time < 2) {
+		d->found = true;
+	}
+	return False;
+}
+
 void ska_platform_pump_events(void) {
 	// File-dialog subprocesses (zenity/kdialog) run independent of our X
 	// connection, so they're still polled in headless runs.
@@ -695,10 +729,32 @@ void ska_platform_pump_events(void) {
 		switch (xev.type) {
 		case KeyPress:
 		case KeyRelease: {
+			// Fallback for the held-key alternation bug: even with the per-
+			// client XkbSetDetectableAutoRepeat from ska_linux_ensure_x_display
+			// in place, some servers / WMs / XWayland-style proxies still
+			// inject a KeyRelease+KeyPress pair for every auto-repeat tick.
+			// The two halves of a pair land within ~1 server tick of each
+			// other, so a sub-2ms time delta on the same window+keycode is
+			// the SDL-proven signature of an auto-repeat (and well below any
+			// physical release-then-press a human finger can produce).
+			// Dropping the release half keeps g_ska.input_state.keyboard
+			// continuously high for the entire hold, while the press still
+			// flows through (carrying text input and a derived repeat flag).
+			// XCheckIfEvent walks the whole queue rather than peeking only
+			// the next event, so an interleaved MotionNotify between the
+			// release and its paired press will not defeat the match.
+			if (xev.type == KeyRelease) {
+				XEvent dummy;
+				ska_x11_keyrepeat_check_t check = { .release = &xev, .found = false };
+				XCheckIfEvent(g_ska.x_display, &dummy, ska_x11_keyrepeat_predicate, (XPointer)&check);
+				if (check.found) {
+					break;
+				}
+			}
+
 			event.type = (xev.type == KeyPress) ? ska_event_key_down : ska_event_key_up;
 			event.keyboard.window_id = window->id;
 			event.keyboard.pressed = (xev.type == KeyPress);
-			event.keyboard.repeat = false; // X11 sends release+press for repeats
 
 			// Convert keycode to KeySym for layout-independent mapping
 			KeySym keysym = XLookupKeysym(&xev.xkey, 0);
@@ -708,6 +764,16 @@ void ska_platform_pump_events(void) {
 			if (event.keyboard.scancode != ska_scancode_unknown) {
 				ska_x11_scancode_table[xev.xkey.keycode] = event.keyboard.scancode;
 			}
+
+			// A press arriving while the key is already tracked as down is an
+			// auto-repeat. With XkbSetDetectableAutoRepeat enabled the server
+			// stops emitting the paired releases, so repeats look exactly like
+			// this: a KeyPress on a still-held scancode. With the peek-suppress
+			// fallback above, the same condition holds because the release
+			// half was dropped before reaching the state update.
+			event.keyboard.repeat = (xev.type == KeyPress) &&
+				event.keyboard.scancode != ska_scancode_unknown &&
+				g_ska.input_state.keyboard[event.keyboard.scancode] != 0;
 
 			// Update keyboard state FIRST (before deriving modifiers)
 			if (event.keyboard.scancode != ska_scancode_unknown) {
