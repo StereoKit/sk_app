@@ -1375,6 +1375,12 @@ void ska_platform_window_minimize(ska_window_t* window) {
 	(void)window;
 }
 
+void ska_platform_window_set_fullscreen(ska_window_t* window, bool fullscreen) {
+	// Android windows are always fullscreen
+	(void)window;
+	(void)fullscreen;
+}
+
 void ska_platform_window_restore(ska_window_t* window) {
 	// No-op on Android
 	(void)window;

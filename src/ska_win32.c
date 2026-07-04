@@ -738,6 +738,14 @@ void ska_platform_window_minimize(ska_window_t* window) {
 	ShowWindow(window->hwnd, SW_MINIMIZE);
 }
 
+void ska_platform_window_set_fullscreen(ska_window_t* window, bool fullscreen) {
+	// TODO: not yet implemented on Windows. The standard approach is
+	// borderless fullscreen: save the window style + rect, switch to
+	// WS_POPUP sized to MonitorFromWindow's rect, and restore on exit.
+	(void)window;
+	(void)fullscreen;
+}
+
 void ska_platform_window_restore(ska_window_t* window) {
 	ShowWindow(window->hwnd, SW_RESTORE);
 }

@@ -310,6 +310,15 @@ bool ska_platform_window_create(
 		XFree(size_hints);
 	}
 
+	// Fullscreen: set the state property before mapping so the window manager
+	// maps the window directly into fullscreen (no windowed->fullscreen hop).
+	// The window resizes to the output; a ska_event_window_resized follows.
+	if (flags & ska_window_fullscreen) {
+		XChangeProperty(g_ska.x_display, window->xwindow,
+		                g_ska.net_wm_state, XA_ATOM, 32, PropModeReplace,
+		                (unsigned char*)&g_ska.net_wm_state_fullscreen, 1);
+	}
+
 	// Ensure it knows its process id
 	Atom  net_wm_pid = XInternAtom(g_ska.x_display, "_NET_WM_PID", False);
 	pid_t pid        = getpid();
@@ -427,6 +436,32 @@ void ska_platform_window_maximize(ska_window_t* window) {
 
 void ska_platform_window_minimize(ska_window_t* window) {
 	XIconifyWindow(g_ska.x_display, window->xwindow, g_ska.x_screen);
+	XFlush(g_ska.x_display);
+}
+
+void ska_platform_window_set_fullscreen(ska_window_t* window, bool fullscreen) {
+	if (window->is_visible) {
+		// Mapped windows change state via a client message to the root window
+		XEvent event = {0};
+		event.type = ClientMessage;
+		event.xclient.window = window->xwindow;
+		event.xclient.message_type = g_ska.net_wm_state;
+		event.xclient.format = 32;
+		event.xclient.data.l[0] = fullscreen ? 1 : 0; // _NET_WM_STATE_ADD : _NET_WM_STATE_REMOVE
+		event.xclient.data.l[1] = g_ska.net_wm_state_fullscreen;
+
+		XSendEvent(g_ska.x_display, g_ska.x_root, False,
+				   SubstructureNotifyMask | SubstructureRedirectMask, &event);
+	} else {
+		// Unmapped windows take the state property directly
+		if (fullscreen) {
+			XChangeProperty(g_ska.x_display, window->xwindow,
+			                g_ska.net_wm_state, XA_ATOM, 32, PropModeReplace,
+			                (unsigned char*)&g_ska.net_wm_state_fullscreen, 1);
+		} else {
+			XDeleteProperty(g_ska.x_display, window->xwindow, g_ska.net_wm_state);
+		}
+	}
 	XFlush(g_ska.x_display);
 }
 

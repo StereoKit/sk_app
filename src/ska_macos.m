@@ -505,6 +505,13 @@ void ska_platform_window_minimize(ska_window_t* window) {
 	}
 }
 
+void ska_platform_window_set_fullscreen(ska_window_t* window, bool fullscreen) {
+	// TODO: not yet implemented on macOS ([nswindow toggleFullScreen:nil],
+	// gated on the current state not already matching).
+	(void)window;
+	(void)fullscreen;
+}
+
 void ska_platform_window_restore(ska_window_t* window) {
 	@autoreleasepool {
 		NSWindow* nswindow = (NSWindow*)window->ns_window;

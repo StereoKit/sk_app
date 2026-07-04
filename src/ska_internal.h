@@ -316,6 +316,7 @@ void ska_platform_window_hide(ska_window_t* ref_window);
 void ska_platform_window_maximize(ska_window_t* ref_window);
 void ska_platform_window_minimize(ska_window_t* ref_window);
 void ska_platform_window_restore(ska_window_t* ref_window);
+void ska_platform_window_set_fullscreen(ska_window_t* ref_window, bool fullscreen);
 void ska_platform_window_raise(ska_window_t* ref_window);
 void ska_platform_window_get_drawable_size(ska_window_t* ref_window, int32_t* opt_out_width, int32_t* opt_out_height);
 float ska_platform_get_dpi_scale(const ska_window_t* window);
