@@ -1892,6 +1892,82 @@ bool ska_android_content_read(const char* uri_str, void** out_data, size_t* out_
 	return true;
 }
 
+bool ska_android_content_write(const char* uri_str, const void* data, size_t size) {
+	if (!uri_str) return false;
+	if (!data && size > 0) {
+		ska_set_error("ska_android_content_write: NULL data with non-zero size");
+		return false;
+	}
+
+	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
+	if (!env || !g_ska.android_context) {
+		ska_set_error("ska_android_content_write: JNI or context not available");
+		return false;
+	}
+
+	// Strip #fragment (display name hint) before parsing the URI
+	char* clean_uri = ska_strdup(uri_str);
+	char* hash = strchr(clean_uri, '#');
+	if (hash) *hash = '\0';
+
+	// Uri.parse(clean_uri)
+	jstring j_uri_str = (*env)->NewStringUTF(env, clean_uri);
+	ska_free(clean_uri);
+	jobject uri = (*env)->CallStaticObjectMethod(env,
+		g_jni_cache.uri_class, g_jni_cache.uri_parse, j_uri_str);
+	(*env)->DeleteLocalRef(env, j_uri_str);
+
+	// context.getContentResolver()
+	jobject resolver = (*env)->CallObjectMethod(env,
+		(jobject)g_ska.android_context, g_jni_cache.ctx_getContentResolver);
+
+	// resolver.openFileDescriptor(uri, "wt") — "wt" truncates, so overwriting an
+	// existing (larger) document doesn't leave a stale tail past our new bytes.
+	jclass    resolver_class = (*env)->GetObjectClass(env, resolver);
+	jmethodID openFd         = (*env)->GetMethodID(env, resolver_class,
+		"openFileDescriptor",
+		"(Landroid/net/Uri;Ljava/lang/String;)Landroid/os/ParcelFileDescriptor;");
+	(*env)->DeleteLocalRef(env, resolver_class);
+	jstring mode = (*env)->NewStringUTF(env, "wt");
+	jobject pfd  = (*env)->CallObjectMethod(env, resolver, openFd, uri, mode);
+	(*env)->DeleteLocalRef(env, mode);
+	(*env)->DeleteLocalRef(env, uri);
+	(*env)->DeleteLocalRef(env, resolver);
+
+	if (!pfd || (*env)->ExceptionCheck(env)) {
+		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+		ska_set_error("ska_android_content_write: Failed to open '%s'", uri_str);
+		if (pfd) (*env)->DeleteLocalRef(env, pfd);
+		return false;
+	}
+
+	// pfd.detachFd() — transfers ownership of the fd to us
+	jclass    pfd_class = (*env)->GetObjectClass(env, pfd);
+	jmethodID detachFd  = (*env)->GetMethodID(env, pfd_class, "detachFd", "()I");
+	int       fd        = (*env)->CallIntMethod(env, pfd, detachFd);
+	(*env)->DeleteLocalRef(env, pfd_class);
+	(*env)->DeleteLocalRef(env, pfd);
+
+	// Write via standard C I/O
+	FILE* file = fdopen(fd, "wb");
+	if (!file) {
+		ska_set_error("ska_android_content_write: fdopen failed for '%s'", uri_str);
+		close(fd);
+		return false;
+	}
+
+	if (size > 0) {
+		size_t bytes_written = fwrite(data, 1, size, file);
+		if (bytes_written != size) {
+			ska_set_error("ska_android_content_write: Wrote %zu bytes, expected %zu", bytes_written, size);
+			fclose(file);
+			return false;
+		}
+	}
+	fclose(file);
+	return true;
+}
+
 // ============================================================================
 // File Dialog
 // ============================================================================

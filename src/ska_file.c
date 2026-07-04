@@ -143,6 +143,12 @@ SKA_API bool ska_file_write(const char* filename, const void* data, size_t size)
 		return false;
 	}
 
+#ifdef SKA_PLATFORM_ANDROID
+	// content:// URIs from file pickers must go through ContentResolver
+	if (strncmp(filename, "content://", 10) == 0)
+		return ska_android_content_write(filename, data, size);
+#endif
+
 #ifdef SKA_PLATFORM_WIN32
 	wchar_t* wfilename = ska_utf8_to_wide(filename);
 	if (!wfilename) {

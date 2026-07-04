@@ -408,6 +408,8 @@ void ska_free_string(void* str);
 // Read a content:// URI via ContentResolver. Returns the file data in the same
 // format as ska_file_read.
 bool ska_android_content_read(const char* uri, void** out_data, size_t* out_size);
+// Write bytes to a content:// URI via ContentResolver, mirroring ska_file_write.
+bool ska_android_content_write(const char* uri, const void* data, size_t size);
 #endif
 
 #endif // SKA_INTERNAL_H
