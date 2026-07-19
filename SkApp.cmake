@@ -22,6 +22,16 @@
 
 # Add asset directories to be bundled with the app (always syncs to catch new files)
 function(target_skapp_assets SKA_TARGET)
+	if(EMSCRIPTEN)
+		# Web: assets are baked into the MEMFS image at link time, mounted at
+		# /Assets so ska_asset_read finds them. Note: generated assets (e.g.
+		# compiled shaders) must exist before the link step on web.
+		foreach(ASSET_DIR ${ARGN})
+			target_link_options(${SKA_TARGET} PRIVATE "SHELL:--preload-file ${ASSET_DIR}@/Assets")
+		endforeach()
+		return()
+	endif()
+
 	get_target_property(ASSETS_DIR ${SKA_TARGET} SKAPP_ASSETS_DIR)
 	get_target_property(ASSETS_STAMP ${SKA_TARGET} SKAPP_ASSETS_STAMP)
 	get_target_property(ASSET_COUNT ${SKA_TARGET} SKAPP_ASSET_COUNT)
@@ -99,7 +109,7 @@ function(add_skapp SKA_TARGET)
 	endif()
 
 	if(NOT ANDROID)
-		# Desktop: executable with assets copied directly to output folder
+		# Desktop/Web: executable with assets copied directly to output folder
 		add_executable(${SKA_TARGET})
 
 		# Assets go directly to output folder (no staging needed)
@@ -109,6 +119,12 @@ function(add_skapp SKA_TARGET)
 		# Package target ensures assets are synced (depends on main target for output dir)
 		add_custom_target(${SKA_TARGET}-package ALL)
 		add_dependencies(${SKA_TARGET}-package ${SKA_TARGET})
+
+		if(EMSCRIPTEN)
+			# Emit an .html page (plus .js/.wasm) so the app is directly runnable
+			set_target_properties(${SKA_TARGET} PROPERTIES SUFFIX ".html")
+			target_link_options(${SKA_TARGET} PRIVATE -sALLOW_MEMORY_GROWTH=1)
+		endif()
 	else()
 		# Android: create shared library + APK with SkAppActivity
 		if(NOT SKA_PACKAGE_NAME)

@@ -64,6 +64,17 @@ static bool    g_verbose = false;
 	TEST_ASSERT(name, condition)
 #endif
 
+// Same, but for known web (Emscripten) platform limitations.
+#ifdef SKA_PLATFORM_WEB
+#define TEST_WEB_EXPECTED(name, condition, reason) do { \
+	if (condition) { TEST_PASS(name); } \
+	else { TEST_SKIP(name, reason); } \
+} while(0)
+#else
+#define TEST_WEB_EXPECTED(name, condition, reason) \
+	TEST_ASSERT(name, condition)
+#endif
+
 // ============================================================================
 // Test Categories
 // ============================================================================
@@ -130,9 +141,10 @@ static void test_working_directory(void) {
 
 	// Test with NULL path (set to executable directory)
 	bool set_cwd = ska_set_cwd(NULL);
-#ifdef SKA_PLATFORM_ANDROID
-	// Android doesn't support changing working directory
-	TEST_SKIP("ska_set_cwd(NULL)", "not supported on Android");
+#if defined(SKA_PLATFORM_ANDROID) || defined(SKA_PLATFORM_WEB)
+	// Android and web have no executable path to change to
+	(void)set_cwd;
+	TEST_SKIP("ska_set_cwd(NULL)", "no executable directory on this platform");
 #else
 	TEST_ASSERT("ska_set_cwd(NULL) succeeds", set_cwd);
 #endif
@@ -641,8 +653,8 @@ static void test_vulkan_extensions(void) {
 	uint32_t ext_count = 0;
 	const char** extensions = ska_vk_get_instance_extensions(&ext_count);
 
-	TEST_ASSERT("ska_vk_get_instance_extensions returns non-NULL", extensions != NULL);
-	TEST_ASSERT("ska_vk_get_instance_extensions returns at least 2 extensions", ext_count >= 2);
+	TEST_WEB_EXPECTED("ska_vk_get_instance_extensions returns non-NULL", extensions != NULL, "Vulkan not available on web");
+	TEST_WEB_EXPECTED("ska_vk_get_instance_extensions returns at least 2 extensions", ext_count >= 2, "Vulkan not available on web");
 
 	if (g_verbose && extensions) {
 		ska_log(ska_log_info, "  Vulkan extensions (%u):", ext_count);
@@ -747,6 +759,117 @@ static void test_mouse_warp(ska_window_t* window) {
 // Interactive Demo (non-test mode)
 // ============================================================================
 
+static bool demo_frame(void* user_data) {
+	ska_window_t* window  = (ska_window_t*)user_data;
+	bool          running = true;
+
+#ifdef SKA_PLATFORM_ANDROID
+	static double demo_start = -1.0;
+	if (demo_start < 0.0) demo_start = ska_time_get_elapsed_s();
+	if (ska_time_get_elapsed_s() - demo_start >= 5.0) {
+		return false;
+	}
+#endif
+
+	ska_event_t event;
+	while (ska_event_poll(&event)) {
+		switch (event.type) {
+			case ska_event_quit:
+			case ska_event_window_close:
+				running = false;
+				break;
+
+			case ska_event_key_down:
+				if (!event.keyboard.repeat) {
+					switch (event.keyboard.scancode) {
+						case ska_scancode_escape:
+							running = false;
+							break;
+						case ska_scancode_m:
+							ska_window_maximize(window);
+							break;
+						case ska_scancode_n:
+							ska_window_minimize(window);
+							break;
+						case ska_scancode_r:
+							ska_window_restore(window);
+							break;
+						case ska_scancode_c:
+							{
+								static bool cursor_visible = true;
+								cursor_visible = !cursor_visible;
+								ska_cursor_show(cursor_visible);
+							}
+							break;
+						case ska_scancode_v:
+							{
+								bool rel = ska_mouse_get_relative_mode();
+								ska_mouse_set_relative_mode(!rel);
+							}
+							break;
+						case ska_scancode_t:
+							ska_virtual_keyboard_show(true, ska_text_input_type_text);
+							break;
+						case ska_scancode_f:
+							{
+								ska_file_filter_t filters[] = {
+									{ "All Files", "*/*", "*" },
+								};
+								ska_file_dialog_request_t req = {
+									.type = ska_file_dialog_open,
+									.title = "Open File",
+									.filters = filters,
+									.filter_count = 1,
+								};
+								ska_file_dialog_show(&req);
+							}
+							break;
+						case ska_scancode_g:
+							{
+								ska_file_filter_t filters[] = {
+									{ "Text Files", "text/plain", "*.txt" },
+								};
+								ska_file_dialog_request_t req = {
+									.type = ska_file_dialog_save,
+									.title = "Save File",
+									.default_name = "untitled.txt",
+									.filters = filters,
+									.filter_count = 1,
+								};
+								ska_file_dialog_show(&req);
+							}
+							break;
+						default:
+							break;
+					}
+				}
+				break;
+
+			case ska_event_file_dialog:
+				ska_log(ska_log_info, "[FILE DIALOG] %s: %d files selected",
+					event.file_dialog.title ? event.file_dialog.title : "(null)",
+					event.file_dialog.count);
+				for (int32_t i = 0; i < event.file_dialog.count; i++) {
+					ska_log(ska_log_info, "  [%d] %s", i,
+						ska_file_dialog_get_path(&event.file_dialog, i));
+				}
+				ska_file_dialog_free_result(&event.file_dialog);
+				break;
+
+			default:
+				break;
+		}
+	}
+
+#ifndef SKA_PLATFORM_WEB
+	// Nothing to render, so sleep to avoid busy-waiting. On the web,
+	// requestAnimationFrame paces the loop instead.
+	ska_time_sleep(16);
+#endif
+
+	return running;
+}
+
 static void run_interactive_demo(ska_window_t* window) {
 	ska_log(ska_log_info, "\n=== Interactive Demo Mode ===");
 #ifdef SKA_PLATFORM_ANDROID
@@ -759,113 +882,9 @@ static void run_interactive_demo(ska_window_t* window) {
 	ska_log(ska_log_info, "  F - File dialog (open)    G - File dialog (save)");
 	ska_log(ska_log_info, "  T - Show virtual keyboard");
 
-	bool running = true;
-	uint32_t frame = 0;
-#ifdef SKA_PLATFORM_ANDROID
-	double demo_start = ska_time_get_elapsed_s();
-#endif
-
-	while (running) {
-#ifdef SKA_PLATFORM_ANDROID
-		if (ska_time_get_elapsed_s() - demo_start >= 5.0) {
-			running = false;
-			break;
-		}
-#endif
-		ska_event_t event;
-
-		while (ska_event_poll(&event)) {
-			switch (event.type) {
-				case ska_event_quit:
-				case ska_event_window_close:
-					running = false;
-					break;
-
-				case ska_event_key_down:
-					if (!event.keyboard.repeat) {
-						switch (event.keyboard.scancode) {
-							case ska_scancode_escape:
-								running = false;
-								break;
-							case ska_scancode_m:
-								ska_window_maximize(window);
-								break;
-							case ska_scancode_n:
-								ska_window_minimize(window);
-								break;
-							case ska_scancode_r:
-								ska_window_restore(window);
-								break;
-							case ska_scancode_c:
-								{
-									static bool cursor_visible = true;
-									cursor_visible = !cursor_visible;
-									ska_cursor_show(cursor_visible);
-								}
-								break;
-							case ska_scancode_v:
-								{
-									bool rel = ska_mouse_get_relative_mode();
-									ska_mouse_set_relative_mode(!rel);
-								}
-								break;
-							case ska_scancode_t:
-								ska_virtual_keyboard_show(true, ska_text_input_type_text);
-								break;
-							case ska_scancode_f:
-								{
-									ska_file_filter_t filters[] = {
-										{ "All Files", "*/*", "*" },
-									};
-									ska_file_dialog_request_t req = {
-										.type = ska_file_dialog_open,
-										.title = "Open File",
-										.filters = filters,
-										.filter_count = 1,
-									};
-									ska_file_dialog_show(&req);
-								}
-								break;
-							case ska_scancode_g:
-								{
-									ska_file_filter_t filters[] = {
-										{ "Text Files", "text/plain", "*.txt" },
-									};
-									ska_file_dialog_request_t req = {
-										.type = ska_file_dialog_save,
-										.title = "Save File",
-										.default_name = "untitled.txt",
-										.filters = filters,
-										.filter_count = 1,
-									};
-									ska_file_dialog_show(&req);
-								}
-								break;
-							default:
-								break;
-						}
-					}
-					break;
-
-				case ska_event_file_dialog:
-					ska_log(ska_log_info, "[FILE DIALOG] %s: %d files selected",
-						event.file_dialog.title ? event.file_dialog.title : "(null)",
-						event.file_dialog.count);
-					for (int32_t i = 0; i < event.file_dialog.count; i++) {
-						ska_log(ska_log_info, "  [%d] %s", i,
-							ska_file_dialog_get_path(&event.file_dialog, i));
-					}
-					ska_file_dialog_free_result(&event.file_dialog);
-					break;
-
-				default:
-					break;
-			}
-		}
-
-		ska_time_sleep(16);
-		frame++;
-	}
+	// On the web ska_run does not return, so cleanup after this call only
+	// happens on native platforms
+	ska_run(demo_frame, window);
 }
 
 // ============================================================================

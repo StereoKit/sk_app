@@ -527,6 +527,10 @@ SKA_API bool ska_get_exe_path(char* ref_buffer, size_t buffer_size) {
 	ska_set_error("ska_get_exe_path: Not supported on Android");
 	return false;
 
+#elif defined(SKA_PLATFORM_WEB)
+	ska_set_error("ska_get_exe_path: Not supported on the web");
+	return false;
+
 #else
 	ska_set_error("ska_get_exe_path: Not supported on this platform");
 	return false;

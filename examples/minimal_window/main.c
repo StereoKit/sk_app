@@ -1,9 +1,44 @@
 // minimal_window - Bare-bones sk_app example
 //
 // Demonstrates the minimum code needed to create a window with sk_app:
-// initialization, window creation, event loop, and cleanup.
+// initialization, window creation, frame loop, and cleanup.
+//
+// The main loop uses ska_run() with a per-frame callback, which runs the same
+// app source on every platform: a plain while-loop on desktop, and a
+// requestAnimationFrame-driven loop on the web.
 
 #include <sk_app.h>
+
+static bool app_frame(void* user_data) {
+	(void)user_data;
+
+	ska_event_t event;
+	while (ska_event_poll(&event)) {
+		switch (event.type) {
+			case ska_event_quit:
+			case ska_event_window_close:
+				return false;
+
+			case ska_event_key_down:
+				if (event.keyboard.scancode == ska_scancode_escape) {
+					return false;
+				}
+				break;
+
+			default:
+				break;
+		}
+	}
+
+	// Rendering would go here
+#ifndef SKA_PLATFORM_WEB
+	// Nothing to render, so sleep to avoid busy-waiting. On the web,
+	// requestAnimationFrame paces the loop instead.
+	ska_time_sleep(16);
+#endif
+
+	return true;
+}
 
 int32_t main(int32_t argc, char** argv) {
 	(void)argc;
@@ -30,32 +65,8 @@ int32_t main(int32_t argc, char** argv) {
 		return 1;
 	}
 
-	// Main loop
-	bool running = true;
-	while (running) {
-		ska_event_t event;
-		while (ska_event_poll(&event)) {
-			switch (event.type) {
-				case ska_event_quit:
-				case ska_event_window_close:
-					running = false;
-					break;
-
-				case ska_event_key_down:
-					if (event.keyboard.scancode == ska_scancode_escape) {
-						running = false;
-					}
-					break;
-
-				default:
-					break;
-			}
-		}
-
-		// Rendering would go here
-		// For now, just sleep to avoid busy-waiting
-		ska_time_sleep(16);
-	}
+	// Main loop (does not return on the web)
+	ska_run(app_frame, window);
 
 	// Cleanup
 	ska_window_destroy(window);

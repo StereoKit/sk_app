@@ -494,6 +494,8 @@ SKA_API void* ska_window_get_native_handle(const ska_window_t* window) {
 	return window->ns_window;
 #elif defined(SKA_PLATFORM_ANDROID)
 	return window->native_window;
+#elif defined(SKA_PLATFORM_WEB)
+	return (void*)window->canvas_selector;
 #else
 	return NULL;
 #endif
@@ -568,6 +570,18 @@ SKA_API bool ska_event_wait_timeout(ska_event_t* out_event, int32_t timeout_ms) 
 		ska_time_sleep(1);
 	}
 }
+
+// ============================================================================
+// Main Loop
+// ============================================================================
+
+// Web builds implement ska_run in ska_web.c on top of emscripten_set_main_loop
+#ifndef SKA_PLATFORM_WEB
+SKA_API void ska_run(ska_frame_fn frame, void* user_data) {
+	if (!frame) return;
+	while (frame(user_data)) {}
+}
+#endif
 
 // ============================================================================
 // Input State

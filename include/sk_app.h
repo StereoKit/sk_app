@@ -1,7 +1,7 @@
 // sk_app - Lightweight cross-platform application framework
 //
-// Provides window management, input handling, and Vulkan surface creation
-// for Win32, Linux, macOS, and Android platforms.
+// Provides window management, input handling, and Vulkan/WebGPU surface
+// creation for Win32, Linux, macOS, Android, and Web (Emscripten) platforms.
 //
 // License: MIT
 
@@ -18,8 +18,11 @@ extern "C" {
 
 // Platform detection (only define if not already defined by build system)
 #if !defined(SKA_PLATFORM_WIN32) && !defined(SKA_PLATFORM_LINUX) && \
-	!defined(SKA_PLATFORM_MACOS) && !defined(SKA_PLATFORM_ANDROID)
-	#if defined(_WIN32)
+	!defined(SKA_PLATFORM_MACOS) && !defined(SKA_PLATFORM_ANDROID) && \
+	!defined(SKA_PLATFORM_WEB)
+	#if defined(__EMSCRIPTEN__)
+		#define SKA_PLATFORM_WEB
+	#elif defined(_WIN32)
 		#define SKA_PLATFORM_WIN32
 	#elif defined(__ANDROID__)
 		#define SKA_PLATFORM_ANDROID
@@ -99,6 +102,40 @@ SKA_API void ska_shutdown(void);
 //
 // @return Error message string (UTF-8), or NULL if no error occurred
 SKA_API const char* ska_error_get(void);
+
+// ============================================================================
+// Main Loop
+// ============================================================================
+
+// Per-frame callback for ska_run().
+// Return true to keep running, false to end the loop.
+typedef bool (*ska_frame_fn)(void* user_data);
+
+// Run the application's main loop, calling frame once per frame.
+//
+// This is the portable replacement for a hand-written `while` loop: on native
+// platforms it is exactly `while (frame(user_data)) {}`, but on the web the
+// browser owns the event loop, so the frame callback is driven by
+// requestAnimationFrame via emscripten_set_main_loop instead. Apps that want
+// to run everywhere should structure their main loop as a frame callback and
+// call this.
+//
+// Hand-written `while` loops remain fully supported on native platforms. In
+// WASM builds they cannot work (the browser never regains control to deliver
+// input or paint), so sk_app detects a blocking loop at runtime and raises an
+// error directing you here instead of silently freezing the tab.
+//
+// Platform behavior:
+// - Native: returns once frame returns false. No pacing is applied; pace with
+//   vsync/present in your renderer, or ska_time_sleep() for windowing-only apps.
+// - Web: does NOT return. The browser paces frames (requestAnimationFrame),
+//   and ska_run() unwinds the stack instead of returning, so code after the
+//   call never executes. When frame returns false the loop is cancelled, but
+//   the page keeps running. Put cleanup in the frame callback if you need it.
+//
+// @param frame Called once per frame (required, not NULL)
+// @param user_data Passed through to every frame call (can be NULL)
+SKA_API void ska_run(ska_frame_fn frame, void* user_data);
 
 // ============================================================================
 // Window Management
@@ -595,6 +632,11 @@ typedef struct ska_event_t {
 // Text input events are automatically pushed to the text queue for ska_text_consume().
 // Non-blocking: returns immediately if queue is empty.
 //
+// Web note: polling from a blocking `while` main loop freezes the tab, so
+// WASM builds detect that pattern and raise a runtime error; drive your loop
+// with ska_run() instead. Polling from inside a ska_run frame (or any other
+// callback) is fine.
+//
 // @param out_event Pointer to event structure to fill (required, not NULL)
 // @return true if event was retrieved, false if no events available
 SKA_API bool ska_event_poll(ska_event_t* out_event);
@@ -731,6 +773,30 @@ SKA_API bool ska_vk_create_surface(
 );
 
 // ============================================================================
+// WebGPU Support
+// ============================================================================
+
+// Create a WebGPU surface for a window.
+// Implemented on every platform, not just web: native builds fill in the
+// Win32/Xlib/Metal/ANativeWindow WGPUSurfaceDescriptor chain (for use with
+// Dawn or wgpu-native), and web builds use the canvas-selector descriptor.
+//
+// sk_app does not link a WebGPU implementation itself; it declares
+// wgpuInstanceCreateSurface and expects the application to link one (Dawn,
+// wgpu-native, or Emscripten's emdawnwebgpu port). The descriptor layout
+// matches the official webgpu-headers, as shipped by all three.
+//
+// @param window Window handle (required, not NULL)
+// @param instance WebGPU instance handle (WGPUInstance cast to void*)
+// @param out_surface Output surface (WGPUSurface* cast to void*), written on success
+// @return true on success, false on failure (check ska_error_get())
+SKA_API bool ska_wgpu_create_surface(
+	const ska_window_t* window,
+	void* instance,
+	void* out_surface
+);
+
+// ============================================================================
 // Platform-Specific Window Handles
 // ============================================================================
 
@@ -743,6 +809,7 @@ SKA_API bool ska_vk_create_surface(
 // Linux Wayland: wl_surface* (not implemented)
 // macOS: NSWindow* (id type)
 // Android: ANativeWindow*
+// Web: CSS selector string for the window's canvas (const char*)
 //
 // @param window Window handle
 // @return Platform-specific handle, or NULL if window is NULL
@@ -768,6 +835,17 @@ SKA_API void* ska_linux_get_x11_display(void);
 //
 // @return Always returns NULL (wl_display* not implemented)
 SKA_API void* ska_linux_get_wayland_display(void);
+#endif
+
+#ifdef SKA_PLATFORM_WEB
+// Get the CSS selector for the window's canvas element (e.g. "#canvas").
+// The first window binds to the page's default canvas (Module.canvas / #canvas)
+// when one exists; additional windows create their own canvas elements.
+// Useful for handing the canvas to other web APIs.
+//
+// @param window Window handle
+// @return Selector string (valid for the window's lifetime), or NULL
+SKA_API const char* ska_web_get_canvas_selector(const ska_window_t* window);
 #endif
 
 #ifdef SKA_PLATFORM_ANDROID

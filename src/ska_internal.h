@@ -39,6 +39,10 @@ char* ska_strdup(const char* str);
 	#include <dlfcn.h>
 #endif
 
+#ifdef SKA_PLATFORM_WEB
+	#include <unistd.h>
+#endif
+
 // Platform-specific includes
 #ifdef SKA_PLATFORM_WIN32
 	#define WIN32_LEAN_AND_MEAN
@@ -115,6 +119,79 @@ typedef enum VkStructureType {
 	VK_STRUCTURE_TYPE_MACOS_SURFACE_CREATE_INFO_MVK    = 1000123000,
 	VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT    = 1000217000,
 } VkStructureType;
+
+// ============================================================================
+// Subset of WebGPU headers that we use
+// ============================================================================
+//
+// Same minimal-header approach as the Vulkan subset above: these declarations
+// match the layout of the official webgpu-headers as shipped by Dawn,
+// wgpu-native, and Emscripten's emdawnwebgpu port, so sk_app has no build
+// dependency on webgpu.h. sk_app does not provide a WebGPU implementation;
+// wgpuInstanceCreateSurface is resolved from whichever one the application
+// links. Only ska_wgpu.c references it, so apps that never call
+// ska_wgpu_create_surface never pull in the dependency.
+
+typedef struct WGPUInstanceImpl* WGPUInstance;
+typedef struct WGPUSurfaceImpl*  WGPUSurface;
+
+typedef enum WGPUSType {
+	WGPUSType_SurfaceSourceMetalLayer                   = 0x00000004,
+	WGPUSType_SurfaceSourceWindowsHWND                  = 0x00000005,
+	WGPUSType_SurfaceSourceXlibWindow                   = 0x00000006,
+	WGPUSType_SurfaceSourceWaylandSurface               = 0x00000007,
+	WGPUSType_SurfaceSourceAndroidNativeWindow          = 0x00000008,
+	WGPUSType_EmscriptenSurfaceSourceCanvasHTMLSelector = 0x00040000,
+	WGPUSType_Force32                                   = 0x7FFFFFFF,
+} WGPUSType;
+
+typedef struct WGPUChainedStruct {
+	struct WGPUChainedStruct* next;
+	WGPUSType                 sType;
+} WGPUChainedStruct;
+
+// Sentinel length for null-terminated WGPUStringView strings
+#define WGPU_STRLEN SIZE_MAX
+
+typedef struct WGPUStringView {
+	const char* data;
+	size_t      length;
+} WGPUStringView;
+
+typedef struct WGPUSurfaceDescriptor {
+	WGPUChainedStruct* nextInChain;
+	WGPUStringView     label;
+} WGPUSurfaceDescriptor;
+
+typedef struct WGPUSurfaceSourceMetalLayer {
+	WGPUChainedStruct chain;
+	void*             layer;     // CAMetalLayer*
+} WGPUSurfaceSourceMetalLayer;
+
+typedef struct WGPUSurfaceSourceWindowsHWND {
+	WGPUChainedStruct chain;
+	void*             hinstance;
+	void*             hwnd;
+} WGPUSurfaceSourceWindowsHWND;
+
+typedef struct WGPUSurfaceSourceXlibWindow {
+	WGPUChainedStruct chain;
+	void*             display;
+	uint64_t          window;
+} WGPUSurfaceSourceXlibWindow;
+
+typedef struct WGPUSurfaceSourceAndroidNativeWindow {
+	WGPUChainedStruct chain;
+	void*             window;    // ANativeWindow*
+} WGPUSurfaceSourceAndroidNativeWindow;
+
+typedef struct WGPUEmscriptenSurfaceSourceCanvasHTMLSelector {
+	WGPUChainedStruct chain;
+	WGPUStringView    selector;
+} WGPUEmscriptenSurfaceSourceCanvasHTMLSelector;
+
+// Provided by the application's WebGPU implementation
+extern WGPUSurface wgpuInstanceCreateSurface(WGPUInstance instance, const WGPUSurfaceDescriptor* descriptor);
 
 // ============================================================================
 // Event Queue
@@ -224,6 +301,11 @@ struct ska_window_t {
 	ANativeWindow* native_window;
 #endif
 
+#ifdef SKA_PLATFORM_WEB
+	char canvas_selector[64]; // CSS selector for the window's canvas element
+	bool owns_canvas;         // Canvas element was created (and is removed) by us
+#endif
+
 	void* user_data;
 };
 
@@ -271,6 +353,11 @@ typedef struct ska_state_t {
 	id ns_app;           // NSApplication*
 	id ns_delegate;      // Application delegate
 	bool app_activated;
+#endif
+
+#ifdef SKA_PLATFORM_WEB
+	bool  web_default_canvas_used; // A window has claimed the page's #canvas
+	float web_cached_dpr;          // Track devicePixelRatio changes
 #endif
 
 #ifdef SKA_PLATFORM_ANDROID

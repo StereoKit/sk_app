@@ -50,6 +50,7 @@ target_sources(sk_app PRIVATE
 	src/ska_input.c
 	src/ska_text.c
 	src/ska_file.c
+	src/ska_wgpu.c
 )
 
 # Include directories
@@ -175,6 +176,21 @@ elseif(APPLE)
 		"-framework CoreVideo"
 		"-framework QuartzCore"
 		"-framework UniformTypeIdentifiers"
+	)
+
+elseif(EMSCRIPTEN)
+	set(SKA_PLATFORM "WEB")
+	target_compile_definitions(sk_app PRIVATE SKA_PLATFORM_WEB)
+
+	# Web-specific sources
+	target_sources(sk_app PRIVATE src/ska_web.c)
+
+	# EM_ASM requires GNU C mode (-std=gnu11), uses $0-style identifiers, and
+	# expands to variadic macros that trip -Wpedantic when called with no args
+	set_target_properties(sk_app PROPERTIES C_EXTENSIONS ON)
+	target_compile_options(sk_app PRIVATE
+		-Wno-dollar-in-identifier-extension
+		-Wno-variadic-macro-arguments-omitted
 	)
 
 elseif(UNIX)
