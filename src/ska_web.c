@@ -404,18 +404,28 @@ static float ska_web_pixel_scale(const ska_window_t* window) {
 	return (window->flags & ska_window_highdpi) ? (float)emscripten_get_device_pixel_ratio() : 1.0f;
 }
 
+// A resizable window on the page's default canvas means "the browser owns the
+// layout": CSS decides the canvas size (viewport-fill, set at create), the
+// pump's CSS-size polling turns layout changes into resize events, and this
+// code only maintains the backing store. Fixed-size windows and secondary
+// canvases keep explicit CSS dimensions.
+static bool ska_web_layout_driven(const ska_window_t* window) {
+	return (window->flags & ska_window_resizable) != 0 && !window->owns_canvas;
+}
+
 // Apply CSS size + backing store size from window->width/height
 static void ska_web_apply_size(ska_window_t* window) {
 	float scale = ska_web_pixel_scale(window);
 	window->drawable_width  = (int32_t)lroundf((float)window->width  * scale);
 	window->drawable_height = (int32_t)lroundf((float)window->height * scale);
 
-	emscripten_set_element_css_size   (window->canvas_selector, window->width, window->height);
+	if (!ska_web_layout_driven(window))
+		emscripten_set_element_css_size(window->canvas_selector, window->width, window->height);
 	emscripten_set_canvas_element_size(window->canvas_selector, window->drawable_width, window->drawable_height);
 }
 
 bool ska_platform_window_create(ska_window_t* ref_window, const char* title, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t flags) {
-	(void)x; (void)y; (void)flags;
+	(void)x; (void)y; (void)flags; // flags are read from ref_window->flags
 
 	if (!ska_web_has_dom()) {
 		ska_set_error("ska_window_create: no DOM available (headless environment)");
@@ -451,6 +461,27 @@ bool ska_platform_window_create(ska_window_t* ref_window, const char* title, int
 	ref_window->width     = w;
 	ref_window->height    = h;
 	ref_window->dpi_scale = (float)emscripten_get_device_pixel_ratio();
+
+	// Layout-driven windows (see ska_web_layout_driven) fill the viewport and
+	// take their size from CSS; everything else keeps the requested size
+	if (ska_web_layout_driven(ref_window)) {
+		EM_ASM({
+			var canvas = document.querySelector(UTF8ToString($0));
+			if (canvas) {
+				document.body.style.margin   = '0';
+				document.body.style.overflow = 'hidden';
+				canvas.style.width  = '100vw';
+				canvas.style.height = '100vh';
+			}
+		}, ref_window->canvas_selector);
+
+		double css_w = 0, css_h = 0;
+		emscripten_get_element_css_size(ref_window->canvas_selector, &css_w, &css_h);
+		if (css_w > 0 && css_h > 0) {
+			ref_window->width  = (int32_t)lround(css_w);
+			ref_window->height = (int32_t)lround(css_h);
+		}
+	}
 	ska_web_apply_size(ref_window);
 
 	// Per-canvas input callbacks
@@ -461,6 +492,21 @@ bool ska_platform_window_create(ska_window_t* ref_window, const char* title, int
 	emscripten_set_mouseenter_callback(sel, ref_window, false, ska_web_on_mouse);
 	emscripten_set_mouseleave_callback(sel, ref_window, false, ska_web_on_mouse);
 	emscripten_set_wheel_callback     (sel, ref_window, false, ska_web_on_wheel);
+
+	// Capture the pointer while a button is held: the browser then retargets
+	// the whole gesture — including the release — to the canvas, so drags
+	// that leave the canvas (or the browser window entirely) still deliver
+	// their mouseup through the emscripten callbacks above. The dataset flag
+	// keeps a re-bound default canvas from stacking duplicate listeners.
+	EM_ASM({
+		var canvas = document.querySelector(UTF8ToString($0));
+		if (canvas && !canvas.dataset.skaPointerCapture) {
+			canvas.dataset.skaPointerCapture = '1';
+			canvas.addEventListener('pointerdown', function (e) {
+				if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
+			});
+		}
+	}, sel);
 
 	emscripten_set_window_title(title);
 
