@@ -561,20 +561,16 @@ float ska_platform_get_refresh_rate(const ska_window_t* window) {
 
 void ska_platform_warp_mouse(ska_window_t* ref_window, int32_t x, int32_t y) {
 
-	// XWayland workaround: XWarpPointer doesn't work correctly on XWayland
-	// without hiding/showing the cursor. This fix is from Blender:
-	// https://developer.blender.org/T53004#467383
-	// https://github.com/blender/blender/blob/a8f7d41d3898/intern/ghost/intern/GHOST_SystemX11.cpp#L1680
-	if (g_ska.is_xwayland) {
-		XFixesHideCursor(g_ska.x_display, ref_window->xwindow);
-	}
-
+	// NOTE: This used to bracket the warp with XFixesHideCursor/ShowCursor on
+	// XWayland (a Blender workaround, T53004, so the visible cursor sprite jumps
+	// to the warped location). Done every frame during a continuous warp - e.g.
+	// simulator mouse-look - that hide/show/flush churn stalls the frame hard on
+	// XWayland (compositor cursor-surface work), showing up purely as wall-clock
+	// frame time with flat CPU/GPU. Callers doing continuous warps now hide the
+	// cursor for the whole session (ska_cursor_show(false)), so there's no
+	// visible sprite to keep in sync and the per-frame workaround is
+	// unnecessary - the logical pointer warp itself does not need it.
 	XWarpPointer(g_ska.x_display, None, ref_window->xwindow, 0, 0, 0, 0, x, y);
-
-	if (g_ska.is_xwayland) {
-		XFixesShowCursor(g_ska.x_display, ref_window->xwindow);
-	}
-
 	XFlush(g_ska.x_display);
 }
 
