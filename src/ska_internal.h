@@ -360,6 +360,10 @@ typedef struct ska_state_t {
 	float web_cached_dpr;          // Track devicePixelRatio changes
 #endif
 
+	// An external loop is driving frames instead of ska_run(); suppresses the
+	// web blocking-loop detector. See ska_set_external_frame_driver.
+	bool external_frame_driver;
+
 #ifdef SKA_PLATFORM_ANDROID
 	struct android_app* android_app;
 	void* android_context;  // jobject global ref — any Context (Activity, Service, etc.)

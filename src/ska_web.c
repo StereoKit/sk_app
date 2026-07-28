@@ -769,6 +769,16 @@ static void ska_web_check_blocking_loop(void) {
 	static int32_t polls_since_yield = 0;
 	static double  first_poll_time   = 0.0;
 
+	// An external driver (an OpenXR runtime on WebXR, say) legitimately runs
+	// without the window rAF heartbeat: an immersive session suspends
+	// window.requestAnimationFrame and drives frames from
+	// XRSession.requestAnimationFrame instead. Detecting that as a blocking
+	// loop would force-exit a perfectly healthy app.
+	if (g_ska.external_frame_driver) {
+		polls_since_yield = 0;
+		return;
+	}
+
 	int32_t heartbeat = EM_ASM_INT({ return Module.skaRafCounter | 0; });
 	if (heartbeat != last_heartbeat) {
 		// Browser got control since the last poll; not a blocking loop

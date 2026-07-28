@@ -72,10 +72,11 @@ typedef void  (*ska_free_fn)(void* ptr, void* user_data);
 
 // Settings for ska_init
 typedef struct ska_settings_t {
-	ska_alloc_fn   alloc;            // Custom allocator (NULL for default malloc)
-	ska_realloc_fn realloc;          // Custom reallocator (NULL for default realloc)
-	ska_free_fn    free;             // Custom free (NULL for default free)
-	void*          alloc_user_data;  // User data passed to all allocator calls
+	ska_alloc_fn   alloc;                  // Custom allocator (NULL for default malloc)
+	ska_realloc_fn realloc;                // Custom reallocator (NULL for default realloc)
+	ska_free_fn    free;                   // Custom free (NULL for default free)
+	void*          alloc_user_data;        // User data passed to all allocator calls
+	bool           external_frame_driver;  // An external loop drives frames instead of ska_run(), suppresses the web blocking-loop detector (web only, see ska_run)
 } ska_settings_t;
 
 // ============================================================================

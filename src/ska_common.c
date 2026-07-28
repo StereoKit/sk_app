@@ -188,10 +188,14 @@ SKA_API bool ska_init(const ska_settings_t* opt_settings) {
 		g_ska_allocator.user_data = NULL;
 	}
 
+
 	memset(&g_ska, 0, sizeof(g_ska));
 #ifdef SKA_PLATFORM_WIN32
 	QueryPerformanceFrequency(&g_qpc_frequency);
 #endif
+	// Must land after the memset above, not before it
+	g_ska.external_frame_driver = opt_settings ? opt_settings->external_frame_driver : false;
+
 	g_ska.start_time = ska_get_time_ns();
 	g_ska.next_window_id = 1;
 
