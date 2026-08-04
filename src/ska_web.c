@@ -168,11 +168,7 @@ static bool ska_web_on_key(int event_type, const EmscriptenKeyboardEvent* e, voi
 	}
 
 	// Derive modifier state from tracked keyboard state, matching X11/Win32
-	uint16_t mods = 0;
-	if (g_ska.input_state.keyboard[ska_scancode_lshift] || g_ska.input_state.keyboard[ska_scancode_rshift]) mods |= ska_keymod_shift;
-	if (g_ska.input_state.keyboard[ska_scancode_lctrl]  || g_ska.input_state.keyboard[ska_scancode_rctrl])  mods |= ska_keymod_ctrl;
-	if (g_ska.input_state.keyboard[ska_scancode_lalt]   || g_ska.input_state.keyboard[ska_scancode_ralt])   mods |= ska_keymod_alt;
-	if (g_ska.input_state.keyboard[ska_scancode_lgui]   || g_ska.input_state.keyboard[ska_scancode_rgui])   mods |= ska_keymod_gui;
+	uint16_t mods = ska_input_state_derive_modifiers(&g_ska.input_state);
 	event.keyboard.modifiers        = mods;
 	g_ska.input_state.key_modifiers = mods;
 

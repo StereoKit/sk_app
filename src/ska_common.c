@@ -509,7 +509,57 @@ SKA_API void* ska_window_get_native_handle(const ska_window_t* window) {
 // Event System
 // ============================================================================
 
+void ska_input_release_all(ska_window_id_t window_id) {
+	ska_input_state_t* input     = &g_ska.input_state;
+	uint32_t           timestamp = ska_time_get_elapsed_ms();
+
+	// Mask is recomputed per release, so these shed modifiers like real ones do
+	for (int32_t scancode = ska_scancode_unknown + 1; scancode < ska_scancode_count; scancode++) {
+		if (!input->keyboard[scancode]) continue;
+
+		input->keyboard[scancode] = 0;
+		input->key_modifiers      = ska_input_state_derive_modifiers(input);
+
+		ska_event_t event = {0};
+		event.type                = ska_event_key_up;
+		event.timestamp           = timestamp;
+		event.keyboard.window_id  = window_id;
+		event.keyboard.pressed    = false;
+		event.keyboard.repeat     = false;
+		event.keyboard.scancode   = (ska_scancode_)scancode;
+		event.keyboard.modifiers  = input->key_modifiers;
+		ska_event_queue_push(&g_ska.event_queue, &event);
+	}
+
+	for (ska_mouse_button_ button = ska_mouse_button_left; button <= ska_mouse_button_x2; button++) {
+		uint32_t mask = 1u << (button - 1);
+		if (!(input->mouse_buttons & mask)) continue;
+
+		input->mouse_buttons &= ~mask;
+
+		ska_event_t event = {0};
+		event.type                   = ska_event_mouse_button_up;
+		event.timestamp              = timestamp;
+		event.mouse_button.window_id = window_id;
+		event.mouse_button.button    = button;
+		event.mouse_button.pressed   = false;
+		event.mouse_button.clicks    = 1;
+		event.mouse_button.x         = input->mouse_x;
+		event.mouse_button.y         = input->mouse_y;
+		ska_event_queue_push(&g_ska.event_queue, &event);
+	}
+
+	// Also clears relative motion, and covers anything a full queue dropped
+	ska_input_state_reset(input);
+}
+
 void ska_post_event(const ska_event_t* event) {
+	// The release half of held input goes to whoever took focus, so it never
+	// arrives here. Released on post, before further events derive modifiers.
+	if (event->type == ska_event_window_focus_lost) {
+		ska_input_release_all(event->window.window_id);
+	}
+
 	if (!ska_event_queue_push(&g_ska.event_queue, event)) {
 		ska_log(ska_log_warn, "Event queue full, dropping event type %d", event->type);
 	}

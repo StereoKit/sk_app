@@ -259,6 +259,14 @@ typedef struct ska_input_state_t {
 void ska_input_state_init(ska_input_state_t* state);
 void ska_input_state_reset(ska_input_state_t* state);
 
+// Modifier mask implied by the tracked key state, for platforms that derive it
+// rather than querying the OS.
+uint16_t ska_input_state_derive_modifiers(const ska_input_state_t* state);
+
+// Queues a key up per held key and a button up per held button, then clears the
+// tracked state.
+void ska_input_release_all(ska_window_id_t window_id);
+
 // ============================================================================
 // Window Structure
 // ============================================================================
