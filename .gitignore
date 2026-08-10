@@ -4,3 +4,4 @@ bin/
 .cache/
 *.keystore
 imgui.ini
+__pycache__/

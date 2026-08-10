@@ -70,6 +70,14 @@ typedef void* (*ska_alloc_fn)(size_t size, void* user_data);
 typedef void* (*ska_realloc_fn)(void* ptr, size_t size, void* user_data);
 typedef void  (*ska_free_fn)(void* ptr, void* user_data);
 
+// Which display server the Linux backend should use.
+// Ignored on every other platform.
+typedef enum ska_linux_backend_ {
+	ska_linux_backend_auto    = 0, // Prefer Wayland, fall back to X11 (default)
+	ska_linux_backend_wayland = 1, // Require Wayland; ska_init fails if unavailable
+	ska_linux_backend_x11     = 2, // Require X11; ska_init fails if unavailable
+} ska_linux_backend_;
+
 // Settings for ska_init
 typedef struct ska_settings_t {
 	ska_alloc_fn   alloc;                  // Custom allocator (NULL for default malloc)
@@ -77,6 +85,18 @@ typedef struct ska_settings_t {
 	ska_free_fn    free;                   // Custom free (NULL for default free)
 	void*          alloc_user_data;        // User data passed to all allocator calls
 	bool           external_frame_driver;  // An external loop drives frames instead of ska_run(), suppresses the web blocking-loop detector (web only, see ska_run)
+
+	// Display server preference (Linux only, ignored elsewhere). Zero is
+	// ska_linux_backend_auto, so zero-initialized settings get the default.
+	// The SKA_VIDEODRIVER environment variable ("wayland" or "x11") overrides
+	// this, which lets an unmodified binary be tested against either backend.
+	ska_linux_backend_ linux_backend;
+
+	// Stable application identifier, used where the OS matches windows to an
+	// application rather than showing text: the Wayland xdg app_id and the X11
+	// WM_CLASS, which are how a window finds its .desktop file and icon
+	// (StartupWMClass). NULL falls back to each window's title.
+	const char* app_id;
 } ska_settings_t;
 
 // ============================================================================
@@ -143,6 +163,14 @@ SKA_API void ska_run(ska_frame_fn frame, void* user_data);
 // ============================================================================
 
 // Window flags
+//
+// DPI is not opt-in: every window renders at the display's native resolution.
+// Window sizes are always screen coordinates, so on a scaled display a window
+// covers more pixels than the number given. Query
+// ska_window_get_drawable_size for the real framebuffer size and
+// ska_window_get_dpi_scale for the factor to raster fonts and UI by;
+// ska_event_window_dpi_changed and ska_event_window_resized both mean those
+// answers moved.
 typedef enum ska_window_ {
 	ska_window_resizable      = 0x00000001,
 	ska_window_borderless     = 0x00000002,
@@ -150,8 +178,7 @@ typedef enum ska_window_ {
 	ska_window_minimized      = 0x00000008,
 	ska_window_hidden         = 0x00000010,
 	ska_window_fullscreen     = 0x00000020,
-	ska_window_highdpi        = 0x00000040,
-	ska_window_always_on_top  = 0x00000080,
+	ska_window_always_on_top  = 0x00000040,
 } ska_window_;
 
 // Window position constants
@@ -229,6 +256,9 @@ SKA_API const char* ska_window_get_title(const ska_window_t* window);
 // Set window frame position.
 // Positions the entire window including title bar and borders.
 // May not take effect immediately on some platforms (window managers can override).
+// No-op on Wayland, which gives clients no control over placement and no way to
+// read back where the compositor put them; the getters report 0 and
+// ska_event_window_moved never fires.
 // No-op on Android when using a Service context (no window to position).
 //
 // @param ref_window Window handle
@@ -695,14 +725,6 @@ SKA_API uint32_t ska_mouse_get_state(int32_t* opt_out_x, int32_t* opt_out_y);
 // @return Button state bitmask
 SKA_API uint32_t ska_mouse_get_global_state(int32_t* opt_out_x, int32_t* opt_out_y);
 
-// Set mouse position relative to window.
-// On X11, sets a flag to ignore the next motion event (to avoid feedback loops).
-//
-// @param ref_window Window handle (required, not NULL)
-// @param x New X position in window coordinates
-// @param y New Y position in window coordinates
-SKA_API void ska_mouse_warp(ska_window_t* ref_window, int32_t x, int32_t y);
-
 // System cursor shapes
 typedef enum ska_system_cursor_ {
 	ska_system_cursor_arrow = 0,
@@ -736,11 +758,22 @@ SKA_API void ska_cursor_show(bool show);
 
 // Enable or disable relative mouse mode (for FPS games, etc).
 // In relative mode, cursor is hidden and motion is not clamped to window bounds.
-// On X11, this only hides the cursor (true relative mode not fully implemented).
+// Motion arrives as xrel/yrel on ska_event_mouse_motion, unaccelerated, while
+// the absolute position stays put. This is the only pointer-capture mechanism:
+// there is deliberately no pointer warp, which Wayland and browsers cannot do.
 //
 // @param enabled true to enable, false to disable
 // @return true on success, false on failure
 SKA_API bool ska_mouse_set_relative_mode(bool enabled);
+
+// Get mouse motion accumulated since the last call to this function, and clear
+// it. Suits a per-frame poller, where several motion events can land between
+// reads. In relative mode this is the unaccelerated delta and the absolute
+// position does not move, so it is the only motion source there.
+//
+// @param opt_out_x Accumulated horizontal motion, may be NULL
+// @param opt_out_y Accumulated vertical motion, may be NULL
+SKA_API void ska_mouse_get_delta(int32_t* opt_out_x, int32_t* opt_out_y);
 
 // Get relative mouse mode state.
 // Returns the state set by ska_mouse_set_relative_mode().
@@ -807,7 +840,7 @@ SKA_API bool ska_wgpu_create_surface(
 //
 // Win32: HWND (cast from void*)
 // Linux X11: Window (cast to unsigned long via uintptr_t)
-// Linux Wayland: wl_surface* (not implemented)
+// Linux Wayland: struct wl_surface*
 // macOS: NSWindow* (id type)
 // Android: ANativeWindow*
 // Web: CSS selector string for the window's canvas (const char*)
@@ -828,14 +861,25 @@ SKA_API void* ska_win32_get_hinstance(void);
 // Get X11 Display pointer (if using X11).
 // Returns the display connection shared by all windows.
 //
-// @return Display* (cast to void*), or NULL if using Wayland (not implemented)
+// @return Display* (cast to void*), or NULL when the Wayland backend is active
 SKA_API void* ska_linux_get_x11_display(void);
 
 // Get Wayland display pointer (if using Wayland).
-// Not implemented: Wayland support is not yet available.
+// Returns the connection shared by all windows.
 //
-// @return Always returns NULL (wl_display* not implemented)
+// @return struct wl_display* (cast to void*), or NULL when X11 is active
 SKA_API void* ska_linux_get_wayland_display(void);
+
+// Get the display server backend actually in use, which may differ from the
+// ska_settings_t preference (auto-selection, or an SKA_VIDEODRIVER override).
+// Never returns ska_linux_backend_auto once ska_init has succeeded.
+//
+// Callers need this to interpret ska_window_get_native_handle(), whose return
+// type differs per backend: an X11 Window id under X11, a wl_surface* under
+// Wayland.
+//
+// @return The resolved backend, or ska_linux_backend_auto if not initialized
+SKA_API ska_linux_backend_ ska_linux_get_backend(void);
 #endif
 
 #ifdef SKA_PLATFORM_WEB

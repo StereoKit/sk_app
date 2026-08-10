@@ -28,15 +28,41 @@ SKA_API bool ska_wgpu_create_surface(const ska_window_t* window, void* instance,
 	desc.nextInChain   = &source.chain;
 
 #elif defined(SKA_PLATFORM_LINUX)
-	if (!g_ska.x_display || !window->xwindow) {
-		ska_set_error("ska_wgpu_create_surface: no X11 display/window available");
+	// Both descriptor types are declared up front so whichever branch runs has
+	// storage that outlives the wgpuInstanceCreateSurface call below.
+	#ifdef SKA_LINUX_X11
+	WGPUSurfaceSourceXlibWindow     xlib_source = {0};
+	#endif
+	#ifdef SKA_LINUX_WAYLAND
+	WGPUSurfaceSourceWaylandSurface wl_source   = {0};
+
+	if (g_ska.backend == ska_linux_backend_wayland) {
+		void* surface = ska_wl_get_native_handle(window);
+		if (!surface) {
+			ska_set_error("ska_wgpu_create_surface: window has no wl_surface");
+			return false;
+		}
+		wl_source.chain.sType = WGPUSType_SurfaceSourceWaylandSurface;
+		wl_source.display     = ska_wl_get_display();
+		wl_source.surface     = surface;
+		desc.nextInChain      = &wl_source.chain;
+	} else
+	#endif
+	{
+	#ifdef SKA_LINUX_X11
+		if (!g_ska.x_display || !window->xwindow) {
+			ska_set_error("ska_wgpu_create_surface: no X11 display/window available");
+			return false;
+		}
+		xlib_source.chain.sType = WGPUSType_SurfaceSourceXlibWindow;
+		xlib_source.display     = (void*)g_ska.x_display;
+		xlib_source.window      = (uint64_t)window->xwindow;
+		desc.nextInChain        = &xlib_source.chain;
+	#else
+		ska_set_error("ska_wgpu_create_surface: no X11 backend in this build");
 		return false;
+	#endif
 	}
-	WGPUSurfaceSourceXlibWindow source = {0};
-	source.chain.sType = WGPUSType_SurfaceSourceXlibWindow;
-	source.display     = (void*)g_ska.x_display;
-	source.window      = (uint64_t)window->xwindow;
-	desc.nextInChain   = &source.chain;
 
 #elif defined(SKA_PLATFORM_ANDROID)
 	if (!window->native_window) {
@@ -72,6 +98,12 @@ SKA_API bool ska_wgpu_create_surface(const ska_window_t* window, void* instance,
 		ska_set_error("ska_wgpu_create_surface: wgpuInstanceCreateSurface failed");
 		return false;
 	}
+
+	// Only after success: marked presenting, sk_app stops committing the
+	// window's wl_surface, so marking a failed surface would freeze it.
+	#if defined(SKA_PLATFORM_LINUX) && defined(SKA_LINUX_WAYLAND)
+	if (g_ska.backend == ska_linux_backend_wayland) ska_wl_mark_presenting(window);
+	#endif
 
 	*(WGPUSurface*)out_surface = surface;
 	return true;

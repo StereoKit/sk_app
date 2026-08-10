@@ -34,6 +34,30 @@ target_include_directories(imgui_example PRIVATE
 )
 skr_copy_moltenvk(imgui_example)
 
+# imgui_impl_sk_renderer.cpp includes "imgui.hlsl.h". Through v2026.7.13
+# sk_renderer committed that generated header to its source tree, so the
+# include directory above was enough. As of v2026.8.7 the output moved to
+# sk_renderer's build dir (a source-tree copy would ping-pong between backends,
+# whose flags differ), and only its own example target compiles it — which we
+# disable via SKR_BUILD_EXAMPLES. So compile the shader ourselves.
+#
+# skshaderc_compile_headers resolves shader paths against the *calling*
+# CMakeLists' source dir, so the path has to be made relative to here rather
+# than passed absolute. It adds OUTPUT_FOLDER to the target's include path.
+if(SKR_USE_WEBGPU)
+	set(_imgui_shader_target "-svsl -t w")
+else()
+	set(_imgui_shader_target "-t s")
+endif()
+file(RELATIVE_PATH _imgui_hlsl
+	${CMAKE_CURRENT_SOURCE_DIR}
+	${sk_renderer_SOURCE_DIR}/example/imgui_backend/imgui.hlsl
+)
+skshaderc_compile_headers(imgui_example ${CMAKE_CURRENT_BINARY_DIR}/imgui_shader
+	"-o3 -e ${_imgui_shader_target}"
+	"${_imgui_hlsl}"
+)
+
 ###############################################################################
 # cimgui dependency
 ###############################################################################

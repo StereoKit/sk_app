@@ -280,20 +280,29 @@ echo ""
 
 # Test Linux build
 if [[ "${RESULTS[linux]}" == "OK" ]]; then
-	echo -e "${CYAN}Testing Linux binary...${NC}"
-	TEST_OUTPUT=$(cd /tmp && "${BINARIES[linux]}" --test $VERBOSE 2>&1 || true)
+	# Linux has two backends chosen at runtime, so test each explicitly rather
+	# than only whichever one the current session happens to select.
+	for backend in x11 wayland; do
+		echo -e "${CYAN}Testing Linux binary (${backend})...${NC}"
+		TEST_EXIT=0
+		TEST_OUTPUT=$(cd /tmp && SKA_VIDEODRIVER=$backend "${BINARIES[linux]}" --test $VERBOSE 2>&1) || TEST_EXIT=$?
 
-	if parse_test_output "$TEST_OUTPUT" "linux"; then
-		RESULTS[linux_test]="PASS"
-		echo -e "  ${GREEN}PASS${NC} - ${TEST_PASSED[linux]} passed, ${TEST_FAILED[linux]} failed, ${TEST_SKIPPED[linux]} skipped"
-	else
-		RESULTS[linux_test]="FAIL"
-		echo -e "  ${RED}FAIL${NC} - ${TEST_PASSED[linux]} passed, ${TEST_FAILED[linux]} failed, ${TEST_SKIPPED[linux]} skipped"
-		# Show failures if any
-		if [[ -n "$VERBOSE" ]]; then
-			echo "$TEST_OUTPUT" | grep -E "^\[FAIL\]" || true
+		# 77 is the conventional "skipped" exit code, from test_window's main
+		if [[ $TEST_EXIT -eq 77 ]]; then
+			RESULTS[linux_test_$backend]="SKIPPED"
+			echo -e "  ${YELLOW}SKIPPED${NC} - $backend not available in this session"
+			continue
 		fi
-	fi
+
+		if parse_test_output "$TEST_OUTPUT" "linux_$backend"; then
+			RESULTS[linux_test_$backend]="PASS"
+			echo -e "  ${GREEN}PASS${NC} - ${TEST_PASSED[linux_$backend]} passed, ${TEST_FAILED[linux_$backend]} failed, ${TEST_SKIPPED[linux_$backend]} skipped"
+		else
+			RESULTS[linux_test_$backend]="FAIL"
+			echo -e "  ${RED}FAIL${NC} - ${TEST_PASSED[linux_$backend]} passed, ${TEST_FAILED[linux_$backend]} failed, ${TEST_SKIPPED[linux_$backend]} skipped"
+			echo "$TEST_OUTPUT" | grep -E "\[FAIL\]" || true
+		fi
+	done
 fi
 
 # Test Windows build with Wine
@@ -404,13 +413,16 @@ if [[ "${RESULTS[linux]}" == "OK" ]]; then
 	echo -e "  Build:  ${GREEN}${RESULTS[linux]}${NC}"
 	echo -e "  Binary: ${BINARIES[linux]}"
 	echo -e "  Size:   $(format_size ${SIZES[linux]})"
-	if [[ -n "${RESULTS[linux_test]}" ]]; then
-		if [[ "${RESULTS[linux_test]}" == "PASS" ]]; then
-			echo -e "  Test:   ${GREEN}${RESULTS[linux_test]}${NC} (${TEST_PASSED[linux]} passed, ${TEST_FAILED[linux]} failed, ${TEST_SKIPPED[linux]} skipped)"
-		else
-			echo -e "  Test:   ${RED}${RESULTS[linux_test]}${NC} (${TEST_PASSED[linux]} passed, ${TEST_FAILED[linux]} failed, ${TEST_SKIPPED[linux]} skipped)"
-		fi
-	fi
+	for backend in x11 wayland; do
+		result="${RESULTS[linux_test_$backend]}"
+		[[ -z "$result" ]] && continue
+		label=$(printf "%-8s" "$backend")
+		case "$result" in
+			PASS)    echo -e "  Test ${label}${GREEN}PASS${NC} (${TEST_PASSED[linux_$backend]} passed, ${TEST_FAILED[linux_$backend]} failed, ${TEST_SKIPPED[linux_$backend]} skipped)" ;;
+			SKIPPED) echo -e "  Test ${label}${YELLOW}SKIPPED${NC}" ;;
+			*)       echo -e "  Test ${label}${RED}FAIL${NC} (${TEST_PASSED[linux_$backend]} passed, ${TEST_FAILED[linux_$backend]} failed, ${TEST_SKIPPED[linux_$backend]} skipped)" ;;
+		esac
+	done
 else
 	echo -e "  Build:  ${RED}${RESULTS[linux]}${NC}"
 fi
@@ -482,7 +494,7 @@ BUILD_FAILED=0
 TEST_FAILED_COUNT=0
 for key in "${!RESULTS[@]}"; do
 	if [[ "${RESULTS[$key]}" == *"FAILED"* ]] || [[ "${RESULTS[$key]}" == "FAIL" ]]; then
-		if [[ "$key" == *"_test" ]]; then
+		if [[ "$key" == *"_test"* ]]; then
 			((TEST_FAILED_COUNT++))
 		else
 			((BUILD_FAILED++))

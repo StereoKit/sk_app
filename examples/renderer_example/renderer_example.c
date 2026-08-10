@@ -170,7 +170,10 @@ int32_t main(int32_t argc, char** argv) {
 	printf("[INIT] sk_app initialized\n");
 
 	// Create window
-	window = ska_window_create("Spinning Cube", SKA_WINDOWPOS_CENTERED, SKA_WINDOWPOS_CENTERED, 1280, 720, ska_window_resizable);
+	// The drawable size is the real pixel size, so this renders at native
+	// resolution.
+	window = ska_window_create("Spinning Cube", SKA_WINDOWPOS_CENTERED, SKA_WINDOWPOS_CENTERED, 1280, 720,
+		ska_window_resizable);
 	if (!window) { fprintf(stderr, "Failed to create window: %s\n", ska_error_get()); goto cleanup; }
 	printf("[WINDOW] Window created\n");
 
@@ -195,8 +198,14 @@ int32_t main(int32_t argc, char** argv) {
 	if (!ska_vk_create_surface(window, skr_get_vk_instance(), &vk_surface)) { fprintf(stderr, "Failed to create Vulkan surface\n"); goto cleanup; }
 	printf("[VULKAN] Surface created\n");
 
+	// Wayland surfaces report no size of their own, so the swapchain is built
+	// from this. Harmless on X11, where the surface reports a real extent and
+	// this is ignored.
+	skr_vec2i_t drawable = {0};
+	ska_window_get_drawable_size(window, &drawable.x, &drawable.y);
+
 	// Create sk_renderer surface
-	if (skr_surface_create(vk_surface, &surface) != skr_err_success || surface.surface == VK_NULL_HANDLE) {
+	if (skr_surface_create(vk_surface, drawable, &surface) != skr_err_success || surface.surface == VK_NULL_HANDLE) {
 		skr_log(skr_log_critical, "Failed to create sk_renderer surface!");
 		vkDestroySurfaceKHR(skr_get_vk_instance(), vk_surface, NULL);
 		goto cleanup;
@@ -294,7 +303,9 @@ int32_t main(int32_t argc, char** argv) {
 						running = false;
 						break;
 					}
-					if (skr_surface_create(vk_surface, &surface) != skr_err_success) {
+					skr_vec2i_t shown_size = {0};
+					ska_window_get_drawable_size(window, &shown_size.x, &shown_size.y);
+					if (skr_surface_create(vk_surface, shown_size, &surface) != skr_err_success) {
 						fprintf(stderr, "Failed to recreate skr_surface\n");
 						vkDestroySurfaceKHR(skr_get_vk_instance(), vk_surface, NULL);
 						running = false;
@@ -304,10 +315,6 @@ int32_t main(int32_t argc, char** argv) {
 					break;
 
 				case ska_event_window_resized:
-					// Don't call skr_surface_resize here — let Vulkan
-					// signal VK_SUBOPTIMAL / VK_ERROR_OUT_OF_DATE via
-					// skr_acquire_needs_resize instead. Android events
-					// can arrive before the Vulkan surface has settled.
 					printf("[EVENT] Window resized to %dx%d\n", event.window.data1, event.window.data2);
 					break;
 
@@ -378,8 +385,10 @@ int32_t main(int32_t argc, char** argv) {
 			camera_target.z + camera_distance * cos_pitch * cos_yaw
 		};
 
-		// Set up view and projection matrices
-		skr_vec2i_t size       = skr_surface_get_size(&surface);
+		// Set up view and projection matrices. The drawable size is the
+		// authority; the surface converges to it at acquire below.
+		skr_vec2i_t size = {0};
+		ska_window_get_drawable_size(window, &size.x, &size.y);
 		float       aspect     = (float)size.x / (float)size.y;
 		float4x4    projection = float4x4_perspective(60.0f * 3.14159265359f / 180.0f, aspect, 0.1f, 100.0f);
 		float4x4    view       = float4x4_lookat(cam_position, camera_target, (float3){0.0f, 1.0f, 0.0f});
@@ -411,9 +420,17 @@ int32_t main(int32_t argc, char** argv) {
 		// Begin rendering
 		skr_renderer_frame_begin();
 
-		// Get next swapchain image
+		// Get next swapchain image. Resizing right away and retrying keeps
+		// frames flowing through an interactive drag, which delivers a new
+		// size every frame.
 		skr_tex_t*   render_target  = NULL;
-		skr_acquire_ acquire_result = skr_surface_next_tex(&surface, &render_target);
+		skr_acquire_ acquire_result = skr_surface_next_tex(&surface, size, &render_target);
+		if (acquire_result == skr_acquire_needs_resize) {
+			skr_surface_resize(&surface, size);
+			recreate_depth_buffer(&depth_buffer, &surface);
+			printf("[RESIZE] surface -> %dx%d\n", size.x, size.y);
+			acquire_result = skr_surface_next_tex(&surface, size, &render_target);
+		}
 
 		if (acquire_result == skr_acquire_success && render_target) {
 			// Set up and submit render pass
@@ -444,15 +461,9 @@ int32_t main(int32_t argc, char** argv) {
 				printf("[RENDER] Frame %u (%.1f FPS)\n", frame, frame / time);
 			}
 		} else {
-			// Failed to acquire swapchain image
+			// Failed to acquire swapchain image (minimized, or an error)
 			skr_renderer_frame_end(NULL, 0);
-
-			if (acquire_result == skr_acquire_needs_resize) {
-				skr_surface_resize(&surface);
-				recreate_depth_buffer(&depth_buffer, &surface);
-			} else if (acquire_result != skr_acquire_success) {
-				ska_time_sleep(16);
-			}
+			ska_time_sleep(16);
 		}
 
 		// Clear render list for next frame

@@ -197,16 +197,82 @@ elseif(UNIX)
 	set(SKA_PLATFORM "LINUX")
 	target_compile_definitions(sk_app PRIVATE SKA_PLATFORM_LINUX)
 
-	# Linux-specific sources
-	target_sources(sk_app PRIVATE src/ska_linux_x11.c)
-
-	# X11 dependencies
-	find_package(X11 REQUIRED)
-	target_link_libraries(sk_app PRIVATE
-		X11::X11
-		X11::Xrandr
-		X11::Xcursor
+	# Linux-specific sources. The display server is a runtime choice here, so
+	# ska_linux.c dispatches every ska_platform_* call to a backend, and
+	# ska_linux_common.c holds the parts that need no display server at all.
+	target_sources(sk_app PRIVATE
+		src/ska_linux.c
+		src/ska_linux_common.c
 	)
+	target_link_libraries(sk_app PRIVATE ${CMAKE_DL_LIBS})
+
+	###########################################################################
+	# X11 backend (optional, detected)
+	###########################################################################
+
+	# X11 is dlopened, not linked, so one binary runs on X11, Wayland, and
+	# headless systems. Only the headers are needed at build time, and ska_linux.c
+	# is written for either backend being absent, so a machine with no X11 headers
+	# builds a Wayland-only sk_app rather than failing.
+	#
+	# The extension headers are required too (ska_x11_dyn.h includes them);
+	# checking here turns a missing -dev package into a clean "backend: no"
+	# instead of a compile error mid-build.
+	find_package(X11)
+	set(SKA_LINUX_X11_FOUND FALSE)
+	if(X11_FOUND AND X11_Xrandr_FOUND AND X11_Xcursor_FOUND AND X11_Xi_FOUND)
+		set(SKA_LINUX_X11_FOUND TRUE)
+		target_compile_definitions(sk_app PRIVATE SKA_LINUX_X11)
+		target_sources(sk_app PRIVATE
+			src/x11/ska_x11.c
+			src/x11/ska_x11_dyn.c
+		)
+		target_include_directories(sk_app PRIVATE ${X11_INCLUDE_DIR})
+	endif()
+
+	###########################################################################
+	# Wayland backend (optional, detected)
+	###########################################################################
+
+	include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/SkAppWayland.cmake)
+	ska_wayland_detect()
+
+	if(NOT SKA_LINUX_WAYLAND_FOUND)
+		message(WARNING
+			"sk_app: building without the Wayland backend. wayland-client, xkbcommon "
+			"or libdecor-0 development headers are missing, so this binary runs on "
+			"X11 and XWayland only.")
+	endif()
+
+	if(SKA_LINUX_WAYLAND_FOUND)
+		target_compile_definitions(sk_app PRIVATE SKA_LINUX_WAYLAND)
+		target_sources(sk_app PRIVATE
+			src/wayland/ska_wayland.c
+			src/wayland/ska_wl_dyn.c
+			src/wayland/ska_decor.c
+		)
+
+		# Protocol code is committed rather than generated at build time; all
+		# protocols land in this one file. Refresh with
+		# tools/gen_wayland_protocols.sh.
+		target_sources(sk_app PRIVATE src/wayland/wayland-protocols.c)
+
+		# Generated code is third-party output and does not answer to sk_app's
+		# warning settings.
+		set_source_files_properties(src/wayland/wayland-protocols.c
+			PROPERTIES COMPILE_OPTIONS "-w")
+
+		# Must precede the system paths: src/wayland holds a wayland-client.h
+		# that deliberately shadows the real one, which is what lets sk_app
+		# dlopen libwayland. See that file for the reasoning.
+		target_include_directories(sk_app BEFORE PRIVATE
+			${CMAKE_CURRENT_SOURCE_DIR}/src/wayland
+		)
+		target_include_directories(sk_app PRIVATE ${WAYLAND_INCLUDE_DIRS})
+		set(SKA_WAYLAND_STATUS "yes")
+	else()
+		set(SKA_WAYLAND_STATUS "no (wayland-client, xkbcommon, or libdecor headers not found)")
+	endif()
 
 else()
 	message(FATAL_ERROR "Unsupported platform")
@@ -260,6 +326,17 @@ message(STATUS "sk_app configuration:")
 message(STATUS "  Version: ${PROJECT_VERSION}")
 message(STATUS "  Platform: ${SKA_PLATFORM}")
 message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
+if(SKA_PLATFORM STREQUAL "LINUX")
+	if(SKA_LINUX_X11_FOUND)
+		message(STATUS "  X11 backend: yes")
+	else()
+		message(STATUS "  X11 backend: no (X11, Xrandr, Xcursor, or Xi headers not found)")
+	endif()
+	message(STATUS "  Wayland backend: ${SKA_WAYLAND_STATUS}")
+	if(NOT SKA_LINUX_X11_FOUND AND NOT SKA_LINUX_WAYLAND_FOUND)
+		message(FATAL_ERROR "sk_app: neither X11 nor Wayland headers were found, so there is no Linux backend to build.")
+	endif()
+endif()
 message(STATUS "  Shared library: ${SKA_BUILD_SHARED}")
 message(STATUS "  Build examples: ${SKA_BUILD_EXAMPLES}")
 message(STATUS "")

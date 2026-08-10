@@ -321,7 +321,7 @@ static void test_window_creation(ska_window_t** out_window) {
 		SKA_WINDOWPOS_CENTERED,
 		SKA_WINDOWPOS_CENTERED,
 		800, 600,
-		ska_window_resizable | ska_window_highdpi
+		ska_window_resizable
 	);
 	TEST_ASSERT("ska_window_create succeeds", window != NULL);
 
@@ -362,8 +362,8 @@ static void test_window_creation(ska_window_t** out_window) {
 	uint32_t flags = ska_window_get_flags(window);
 	TEST_ASSERT("ska_window_get_flags includes resizable",
 		(flags & ska_window_resizable) != 0);
-	TEST_ASSERT("ska_window_get_flags includes highdpi",
-		(flags & ska_window_highdpi) != 0);
+	TEST_ASSERT("ska_window_get_flags omits unset flags",
+		(flags & ska_window_fullscreen) == 0);
 }
 
 static void test_window_geometry(ska_window_t* window) {
@@ -481,12 +481,16 @@ static void test_window_state(ska_window_t* window) {
 	TEST_ASSERT("ska_window_get_native_handle returns non-NULL", native != NULL);
 
 #ifdef SKA_PLATFORM_LINUX
-	void* display = ska_linux_get_x11_display();
-	TEST_ASSERT("ska_linux_get_x11_display returns non-NULL", display != NULL);
-
+	// Exactly one display accessor is live, decided by the active backend
+	void* x11     = ska_linux_get_x11_display();
 	void* wayland = ska_linux_get_wayland_display();
-	// Wayland not implemented, should return NULL
-	TEST_ASSERT("ska_linux_get_wayland_display returns NULL (not implemented)", wayland == NULL);
+	if (ska_linux_get_backend() == ska_linux_backend_wayland) {
+		TEST_ASSERT("ska_linux_get_wayland_display returns non-NULL on Wayland", wayland != NULL);
+		TEST_ASSERT("ska_linux_get_x11_display returns NULL on Wayland",         x11     == NULL);
+	} else {
+		TEST_ASSERT("ska_linux_get_x11_display returns non-NULL on X11",         x11     != NULL);
+		TEST_ASSERT("ska_linux_get_wayland_display returns NULL on X11",         wayland == NULL);
+	}
 #endif
 
 #ifdef SKA_PLATFORM_WIN32
@@ -736,23 +740,180 @@ static void test_multiple_windows(void) {
 	}
 }
 
-static void test_mouse_warp(ska_window_t* window) {
-	if (!window) {
-		TEST_SKIP("mouse warp test", "no window available");
+// Verifies the relationship between the size an app asks for, the content size
+// it is told it has, and the pixels it must actually render. That contract is
+// identical on every backend, so this is the regression cover for it.
+static bool within_one(int32_t actual, int32_t expected) {
+	int32_t diff = actual - expected;
+	return diff <= 1 && diff >= -1;
+}
+
+// The drawable size is the content size in pixels, but which of the two is
+// authoritative differs: Wayland is told a logical size and derives pixels,
+// while X11 and Win32 own a pixel size and derive the logical one by dividing.
+// That round trip can land a pixel short, so this allows one. A drawable left
+// stale by a resize is wrong by far more than that.
+static bool drawable_matches(int32_t drawable, int32_t content, float scale) {
+	return within_one(drawable, (int32_t)((float)content * scale + 0.999f));
+}
+
+// Collects the sizes reported by a window's resize events over a bounded
+// window of time. Window managers answer size requests asynchronously, so this
+// waits rather than polling once.
+typedef struct { int32_t w, h; } test_size_t;
+
+static int32_t collect_resize_events(ska_window_t* window, int32_t timeout_ms, test_size_t* out_sizes, int32_t max_sizes) {
+	ska_window_id_t id    = ska_window_get_id(window);
+	int32_t         count = 0;
+	ska_event_t     event;
+
+	for (int32_t elapsed = 0; elapsed < timeout_ms; elapsed += 10) {
+		while (ska_event_poll(&event)) {
+			if (event.type != ska_event_window_resized || event.window.window_id != id) continue;
+			// Overflow is dropped, and the count says so: callers index
+			// out_sizes by this return value.
+			if (count < max_sizes) out_sizes[count++] = (test_size_t){ event.window.data1, event.window.data2 };
+		}
+		ska_time_sleep(10);
+	}
+	return count;
+}
+
+// Two resize events in a row carrying the same size means one change was
+// reported twice. A compositor resends configure throughout an interactive
+// drag, so an app that rebuilds its swapchain per event pays for every
+// duplicate. Distinct sizes in sequence are legitimate.
+static bool reported_same_size_twice(const test_size_t* sizes, int32_t count) {
+	for (int32_t i = 1; i < count; i++) {
+		if (sizes[i].w == sizes[i - 1].w && sizes[i].h == sizes[i - 1].h) return true;
+	}
+	return false;
+}
+
+// Resizing has to keep three things in step: the reported content size, the
+// drawable size derived from it, and the resize events the app sees. The
+// app-driven and compositor-driven paths reach that state differently, so both
+// are exercised here.
+static void test_resize_contract(void) {
+	ska_log(ska_log_info, "\n=== Resize Contract Tests ===");
+
+	ska_window_t* win = ska_window_create("Resize contract", 0, 0, 800, 600,
+		ska_window_resizable);
+	if (!win) {
+		TEST_SKIP("resize contract", "window creation failed");
 		return;
 	}
 
-	ska_log(ska_log_info, "\n=== Mouse Warp Tests ===");
+	test_size_t sizes[32];
+	collect_resize_events(win, 200, sizes, 32); // Settle the initial configure
 
-	// Warp mouse to center of window
-	int32_t w, h;
-	ska_window_get_content_size(window, &w, &h);
-	ska_mouse_warp(window, w / 2, h / 2);
-	TEST_PASS("ska_mouse_warp to center");
+	// App-driven: the app names a size and the platform follows
+	const struct { int32_t w, h; } requests[] = { {640, 480}, {900, 500}, {500, 700} };
+	for (size_t i = 0; i < sizeof(requests) / sizeof(requests[0]); i++) {
+		ska_window_set_content_size(win, requests[i].w, requests[i].h);
+		int32_t count = collect_resize_events(win, 300, sizes, 32);
 
-	// Warp to corner
-	ska_mouse_warp(window, 0, 0);
-	TEST_PASS("ska_mouse_warp to origin");
+		int32_t cw, ch, dw, dh;
+		ska_window_get_content_size (win, &cw, &ch);
+		ska_window_get_drawable_size(win, &dw, &dh);
+		float scale = ska_window_get_dpi_scale(win);
+
+		// Backends that own a pixel size derive the logical one by dividing, so
+		// at a fractional scale a requested size can come back a pixel off.
+		// Wayland is told the logical size directly and round-trips exactly.
+		TEST_ASSERT_MSG("resize reports the new content size",
+			within_one(cw, requests[i].w) && within_one(ch, requests[i].h),
+			"content size did not follow ska_window_set_content_size");
+
+		// The drawable has to be recomputed from the new size, not left stale
+		TEST_ASSERT_MSG("drawable size follows the resize",
+			drawable_matches(dw, cw, scale) && drawable_matches(dh, ch, scale),
+			"drawable size is stale or does not match content * scale");
+
+		TEST_ASSERT_MSG("a size change reports a resize event", count >= 1,
+			"no resize event was delivered");
+		TEST_ASSERT_MSG("an app-driven resize is reported once", !reported_same_size_twice(sizes, count),
+			"the same size was reported twice in a row");
+	}
+
+	// Re-requesting the current size must be silent, which is what stops a
+	// stream of no-op configures from reaching the app
+	int32_t cw, ch;
+	ska_window_get_content_size(win, &cw, &ch);
+	ska_window_set_content_size(win, cw, ch);
+	TEST_ASSERT_MSG("re-requesting the current size reports nothing", collect_resize_events(win, 300, sizes, 32) == 0,
+		"a no-op resize still produced an event");
+
+	// Compositor-driven: the window manager names the size. This is the path an
+	// interactive drag uses, and it reaches the app through different code than
+	// an app-driven resize does.
+	ska_window_maximize(win);
+	int32_t max_count = collect_resize_events(win, 500, sizes, 32);
+	TEST_ASSERT_MSG("a compositor-driven resize is reported once", !reported_same_size_twice(sizes, max_count),
+		"the same size was reported twice in a row");
+
+	if (max_count > 0) {
+		int32_t mw, mh, mdw, mdh;
+		ska_window_get_content_size (win, &mw,  &mh);
+		ska_window_get_drawable_size(win, &mdw, &mdh);
+		float scale = ska_window_get_dpi_scale(win);
+		TEST_ASSERT_MSG("drawable follows a compositor-driven resize",
+			drawable_matches(mdw, mw, scale) && drawable_matches(mdh, mh, scale),
+			"drawable size is stale after the window manager resized the window");
+	} else {
+		TEST_SKIP("drawable follows a compositor-driven resize", "window manager did not resize on maximize");
+	}
+
+	ska_window_restore(win);
+	int32_t restore_count = collect_resize_events(win, 500, sizes, 32);
+	TEST_ASSERT_MSG("a compositor-driven restore is reported once", !reported_same_size_twice(sizes, restore_count),
+		"the same size was reported twice in a row");
+
+	ska_window_destroy(win);
+}
+
+static void test_dpi_contract(void) {
+	ska_log(ska_log_info, "\n=== DPI Contract Tests ===");
+
+	struct { const char* label; int32_t w, h; } cases[] = {
+		{ "640x480", 640, 480 },
+		{ "801x601", 801, 601 }, // Odd size, so fractional scales round
+	};
+
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+		ska_window_t* win = ska_window_create(cases[i].label, 0, 0, cases[i].w, cases[i].h, ska_window_resizable);
+		if (!win) {
+			TEST_SKIP(cases[i].label, "window creation failed");
+			continue;
+		}
+
+		int32_t cw, ch, dw, dh;
+		ska_window_get_content_size (win, &cw, &ch);
+		ska_window_get_drawable_size(win, &dw, &dh);
+		float scale = ska_window_get_dpi_scale(win);
+
+		// Content size is what was asked for, in screen coordinates
+		TEST_ASSERT("content size matches the requested size", cw == cases[i].w && ch == cases[i].h);
+		TEST_ASSERT("dpi scale is sane", scale >= 0.5f && scale <= 10.0f);
+
+		// Drawable is the pixel count those screen coordinates cover, rounded
+		// up so a window never gets fewer pixels than it occupies. Wayland
+		// rounds in exact integer 120ths where this float math can land one
+		// higher (640 * 1.2f = 768.00003), so accept either.
+		int32_t expect_w = (int32_t)((float)cw * scale);
+		int32_t expect_h = (int32_t)((float)ch * scale);
+		if ((float)expect_w < (float)cw * scale) expect_w++;
+		if ((float)expect_h < (float)ch * scale) expect_h++;
+		bool w_ok = dw == expect_w || dw == expect_w - 1;
+		bool h_ok = dh == expect_h || dh == expect_h - 1;
+		TEST_ASSERT("drawable is content scaled to native pixels", w_ok && h_ok);
+
+		if (g_verbose) {
+			ska_log(ska_log_info, "  %-16s content %dx%d drawable %dx%d scale %.2f",
+				cases[i].label, cw, ch, dw, dh, scale);
+		}
+		ska_window_destroy(win);
+	}
 }
 
 // ============================================================================
@@ -924,6 +1085,14 @@ int32_t main(int32_t argc, char** argv) {
 	// Initialize
 	ska_log(ska_log_info, "\n=== Initialization ===");
 	if (!ska_init(NULL)) {
+		// A backend forced by SKA_VIDEODRIVER may simply not exist in this
+		// session; exit with the conventional skip code so a test harness can
+		// tell "not available here" from a real failure.
+		const char* forced = getenv("SKA_VIDEODRIVER");
+		if (forced && forced[0]) {
+			ska_log(ska_log_error, "Requested '%s' backend unavailable: %s", forced, ska_error_get());
+			return 77;
+		}
 		ska_log(ska_log_error, "Failed to initialize sk_app: %s", ska_error_get());
 		TEST_FAIL("ska_init", ska_error_get());
 		goto print_summary;
@@ -952,7 +1121,8 @@ int32_t main(int32_t argc, char** argv) {
 	test_events(window);
 	test_file_dialogs();
 	test_multiple_windows();
-	test_mouse_warp(window);
+	test_dpi_contract();
+	test_resize_contract();
 
 	// Interactive mode or exit
 	if (!test_mode && window) {

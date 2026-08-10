@@ -213,10 +213,13 @@ static bool ska_web_on_mouse(int event_type, const EmscriptenMouseEvent* e, void
 	case EMSCRIPTEN_EVENT_MOUSEMOVE: {
 		int32_t x, y, xrel, yrel;
 		if (g_web_pointer_locked) {
+			// The absolute position stays frozen in relative mode, matching
+			// the other backends; accumulating movementX would wander
+			// unbounded past the window edges.
 			xrel = (int32_t)e->movementX;
 			yrel = (int32_t)e->movementY;
-			x    = g_ska.input_state.mouse_x + xrel;
-			y    = g_ska.input_state.mouse_y + yrel;
+			x    = g_ska.input_state.mouse_x;
+			y    = g_ska.input_state.mouse_y;
 		} else {
 			x    = (int32_t)e->targetX;
 			y    = (int32_t)e->targetY;
@@ -233,8 +236,7 @@ static bool ska_web_on_mouse(int event_type, const EmscriptenMouseEvent* e, void
 
 		g_ska.input_state.mouse_x    = x;
 		g_ska.input_state.mouse_y    = y;
-		g_ska.input_state.mouse_xrel = xrel;
-		g_ska.input_state.mouse_yrel = yrel;
+		ska_input_add_relative(xrel, yrel);
 
 		ska_post_event(&event);
 		break;
@@ -397,7 +399,8 @@ void ska_platform_shutdown(void) {
 // ============================================================================
 
 static float ska_web_pixel_scale(const ska_window_t* window) {
-	return (window->flags & ska_window_highdpi) ? (float)emscripten_get_device_pixel_ratio() : 1.0f;
+	(void)window;
+	return (float)emscripten_get_device_pixel_ratio();
 }
 
 // A resizable window on the page's default canvas means "the browser owns the
@@ -547,12 +550,12 @@ void ska_platform_window_set_title(ska_window_t* ref_window, const char* title) 
 	}
 }
 
-void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_left, int32_t* out_right, int32_t* out_top, int32_t* out_bottom) {
+void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* opt_out_left, int32_t* opt_out_right, int32_t* opt_out_top, int32_t* opt_out_bottom) {
 	(void)window;
-	if (out_left)   *out_left   = 0;
-	if (out_right)  *out_right  = 0;
-	if (out_top)    *out_top    = 0;
-	if (out_bottom) *out_bottom = 0;
+	if (opt_out_left)   *opt_out_left   = 0;
+	if (opt_out_right)  *opt_out_right  = 0;
+	if (opt_out_top)    *opt_out_top    = 0;
+	if (opt_out_bottom) *opt_out_bottom = 0;
 }
 
 void ska_platform_window_set_frame_position(ska_window_t* ref_window, int32_t x, int32_t y) {
@@ -627,9 +630,7 @@ void ska_platform_window_set_fullscreen(ska_window_t* ref_window, bool fullscree
 	if (fullscreen) {
 		EmscriptenFullscreenStrategy strategy = {0};
 		strategy.scaleMode                 = EMSCRIPTEN_FULLSCREEN_SCALE_STRETCH;
-		strategy.canvasResolutionScaleMode = (ref_window->flags & ska_window_highdpi)
-		                                     ? EMSCRIPTEN_FULLSCREEN_CANVAS_SCALE_HIDEF
-		                                     : EMSCRIPTEN_FULLSCREEN_CANVAS_SCALE_STDDEF;
+		strategy.canvasResolutionScaleMode = EMSCRIPTEN_FULLSCREEN_CANVAS_SCALE_HIDEF;
 		strategy.filteringMode             = EMSCRIPTEN_FULLSCREEN_FILTERING_DEFAULT;
 		// Deferred: browsers only allow fullscreen from a user gesture, so the
 		// request is queued until the next input event if needed
@@ -671,11 +672,6 @@ float ska_platform_get_refresh_rate(const ska_window_t* window) {
 // ============================================================================
 // Input
 // ============================================================================
-
-void ska_platform_warp_mouse(ska_window_t* ref_window, int32_t x, int32_t y) {
-	// Browsers cannot move the pointer
-	(void)ref_window; (void)x; (void)y;
-}
 
 static const char* ska_web_cursor_css_name(ska_system_cursor_ cursor) {
 	switch (cursor) {

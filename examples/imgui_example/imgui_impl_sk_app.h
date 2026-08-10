@@ -23,6 +23,12 @@ void ImGui_ImplSkApp_NewFrame     (void);
 bool ImGui_ImplSkApp_ProcessEvent (const struct ska_event_t* event);
 
 // Get the DPI scale factor for the window.
+//
+// The backend drives ImGui in pixels: io.DisplaySize is the drawable size and
+// mouse input is scaled to match. The drawable is always the real pixel count,
+// so scale the style and rasterize fonts by this factor, or the UI renders at
+// the wrong size.
+//
 // Use this to scale font sizes when loading fonts:
 //
 //   float dpi_scale = ImGui_ImplSkApp_GetDpiScale();

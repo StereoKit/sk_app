@@ -50,7 +50,9 @@ char* ska_strdup(const char* str);
 	#include <windowsx.h>
 #endif
 
-#ifdef SKA_PLATFORM_LINUX
+// Only the X11 backend needs Xlib types; a Wayland-only build must compile on
+// a machine with no X11 headers at all.
+#ifdef SKA_LINUX_X11
 	#include <X11/Xlib.h>
 	#include <X11/Xutil.h>
 	#include <X11/Xatom.h>
@@ -114,6 +116,7 @@ typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_vkGetInstanceProcAddr)(VkInstance ins
 // Structure types used across platforms
 typedef enum VkStructureType {
 	VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR     = 1000004000,
+	VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR  = 1000006000,
 	VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR    = 1000009000,
 	VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR  = 1000008000,
 	VK_STRUCTURE_TYPE_MACOS_SURFACE_CREATE_INFO_MVK    = 1000123000,
@@ -180,6 +183,12 @@ typedef struct WGPUSurfaceSourceXlibWindow {
 	uint64_t          window;
 } WGPUSurfaceSourceXlibWindow;
 
+typedef struct WGPUSurfaceSourceWaylandSurface {
+	WGPUChainedStruct chain;
+	void*             display; // wl_display*
+	void*             surface; // wl_surface*
+} WGPUSurfaceSourceWaylandSurface;
+
 typedef struct WGPUSurfaceSourceAndroidNativeWindow {
 	WGPUChainedStruct chain;
 	void*             window;    // ANativeWindow*
@@ -213,10 +222,6 @@ bool ska_event_queue_is_empty(const ska_event_queue_t* queue);
 void ska_event_queue_clear(ska_event_queue_t* queue);
 
 // ============================================================================
-// Input State
-// ============================================================================
-
-// ============================================================================
 // Text Input Queue
 // ============================================================================
 
@@ -243,8 +248,10 @@ typedef struct ska_input_state_t {
 
 	int32_t mouse_x;
 	int32_t mouse_y;
-	int32_t mouse_xrel;
+	int32_t mouse_xrel;      // Last motion event's delta
 	int32_t mouse_yrel;
+	int32_t mouse_delta_x;   // Accumulated since the last ska_mouse_get_delta
+	int32_t mouse_delta_y;
 	uint32_t mouse_buttons;
 
 	bool relative_mouse_mode;
@@ -258,6 +265,9 @@ typedef struct ska_input_state_t {
 
 void ska_input_state_init(ska_input_state_t* state);
 void ska_input_state_reset(ska_input_state_t* state);
+
+// Records one motion delta, both as the latest and into the polled accumulator
+void ska_input_add_relative(int32_t xrel, int32_t yrel);
 
 // Modifier mask implied by the tracked key state, for platforms that derive it
 // rather than querying the OS.
@@ -296,8 +306,11 @@ struct ska_window_t {
 #endif
 
 #ifdef SKA_PLATFORM_LINUX
+	#ifdef SKA_LINUX_X11
 	Window xwindow;
-	XIC xic;
+	XIC    xic;
+	#endif
+	struct ska_wl_window_t* wl; // Wayland backend state, see ska_wayland.c
 #endif
 
 #ifdef SKA_PLATFORM_MACOS
@@ -318,6 +331,114 @@ struct ska_window_t {
 };
 
 // ============================================================================
+// Linux Backend Dispatch
+// ============================================================================
+
+#ifdef SKA_PLATFORM_LINUX
+
+// X11 and Wayland are both compiled in when available and chosen at runtime,
+// so ska_linux.c forwards every ska_platform_* entry point through this table.
+// Entry points that behave identically on both live in ska_linux_common.c.
+typedef struct ska_linux_vtable_t {
+	const char* name; // "x11" or "wayland", for logging
+
+	bool  (*init)                     (void);
+	void  (*shutdown)                 (void);
+
+	bool  (*window_create)            (ska_window_t* ref_window, const char* title, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t flags);
+	void  (*window_destroy)           (ska_window_t* ref_window);
+	void  (*window_set_title)         (ska_window_t* ref_window, const char* title);
+	void  (*window_set_frame_position)(ska_window_t* ref_window, int32_t x, int32_t y);
+	void  (*window_set_frame_size)    (ska_window_t* ref_window, int32_t w, int32_t h);
+	void  (*window_show)              (ska_window_t* ref_window);
+	void  (*window_hide)              (ska_window_t* ref_window);
+	void  (*window_maximize)          (ska_window_t* ref_window);
+	void  (*window_minimize)          (ska_window_t* ref_window);
+	void  (*window_restore)           (ska_window_t* ref_window);
+	void  (*window_set_fullscreen)    (ska_window_t* ref_window, bool fullscreen);
+	void  (*window_raise)             (ska_window_t* ref_window);
+	void  (*window_get_drawable_size) (ska_window_t* ref_window, int32_t* opt_out_width, int32_t* opt_out_height);
+	void  (*get_frame_extents)        (const ska_window_t* window, int32_t* opt_out_left, int32_t* opt_out_right, int32_t* opt_out_top, int32_t* opt_out_bottom);
+	float (*get_dpi_scale)            (const ska_window_t* window);
+	float (*get_refresh_rate)         (const ska_window_t* window);
+
+	void  (*show_cursor)              (bool show);
+	void  (*set_cursor)               (ska_system_cursor_ cursor);
+	bool  (*set_relative_mouse_mode)  (bool enabled);
+
+	void  (*pump_events)              (void);
+
+	const char** (*vk_get_instance_extensions)(uint32_t* out_count);
+	bool         (*vk_create_surface)         (const ska_window_t* window, VkInstance instance, VkSurfaceKHR* out_surface);
+
+	char* (*clipboard_get_text)       (void);
+	bool  (*clipboard_set_text)       (const char* text);
+} ska_linux_vtable_t;
+
+#ifdef SKA_LINUX_X11
+extern const ska_linux_vtable_t ska_x11_vtable;
+#endif
+
+// Polls the pending zenity/kdialog subprocess. Each backend calls this from
+// pump_events, including on headless paths with no display connection.
+void ska_linux_check_file_dialog(void);
+
+// Layout-independent keysym to scancode mapping, shared because X11 and
+// xkbcommon use identical keysym values.
+ska_scancode_ ska_linux_keysym_to_scancode(uint32_t keysym);
+
+// Entry point into the Vulkan loader, cached after the first call. NULL when
+// no loader is installed.
+PFN_vkGetInstanceProcAddr ska_linux_vk_get_proc_addr(void);
+
+#ifdef SKA_LINUX_WAYLAND
+// Native handle accessors, reached from the public API in ska_common.c rather
+// than through the vtable, since they have no X11-side counterpart to dispatch.
+void* ska_wl_get_native_handle(const ska_window_t* window);
+
+// Says a renderer now attaches and commits this window's surface, so sk_app
+// stops committing pending state on its own.
+void  ska_wl_mark_presenting  (const ska_window_t* window);
+void* ska_wl_get_display(void);
+#endif
+
+#endif // SKA_PLATFORM_LINUX
+
+// ============================================================================
+// Logical and Pixel Coordinates
+// ============================================================================
+//
+// Window sizes, positions, and mouse coordinates are screen coordinates, while
+// the drawable size and the underlying OS window are pixels. On a scaled
+// display those differ, so backends convert at the API boundary.
+//
+// The Wayland backend does not use these: the compositor hands it logical
+// coordinates directly, and its scale is an exact 120ths integer rather than
+// this float.
+
+static inline float ska_window_scale(const ska_window_t* window) {
+	if (!window) return 1.0f;
+	return window->dpi_scale > 0.0f ? window->dpi_scale : 1.0f;
+}
+
+// Rounds up, so a window never resolves to fewer pixels than it covers. Done by
+// hand rather than with ceilf, which would drag libm in for one operation.
+static inline int32_t ska_to_pixels(const ska_window_t* window, int32_t logical) {
+	float scale = ska_window_scale(window);
+	if (scale == 1.0f) return logical;
+
+	float   exact = (float)logical * scale;
+	int32_t whole = (int32_t)exact;
+	return exact > (float)whole ? whole + 1 : whole;
+}
+
+static inline int32_t ska_to_logical(const ska_window_t* window, int32_t pixels) {
+	float scale = ska_window_scale(window);
+	if (scale == 1.0f) return pixels;
+	return (int32_t)((float)pixels / scale + 0.5f);
+}
+
+// ============================================================================
 // Global State
 // ============================================================================
 
@@ -325,6 +446,7 @@ typedef struct ska_state_t {
 	bool initialized;
 	char error_msg[512];
 	uint64_t start_time;
+	char* app_id; // From ska_settings_t, NULL when unset; window title stands in
 
 	ska_window_t* windows[SKA_MAX_WINDOWS];
 	uint32_t window_count;
@@ -342,6 +464,12 @@ typedef struct ska_state_t {
 #endif
 
 #ifdef SKA_PLATFORM_LINUX
+	ska_linux_backend_        backend; // Resolved by ska_platform_init
+	const ska_linux_vtable_t* lnx;     // NULL only before init and after shutdown
+
+	struct ska_wl_state_t* wl; // Wayland backend state, see ska_wayland.c
+
+	#ifdef SKA_LINUX_X11
 	Display* x_display;
 	int32_t x_screen;
 	Window x_root;
@@ -354,7 +482,7 @@ typedef struct ska_state_t {
 	Atom resource_manager; // For DPI change detection
 	XIM xim;
 	float cached_dpi_scale; // Track DPI changes
-	bool is_xwayland;       // Running under XWayland (X11 on Wayland)
+	#endif
 #endif
 
 #ifdef SKA_PLATFORM_MACOS
@@ -423,10 +551,9 @@ float ska_platform_get_refresh_rate(const ska_window_t* window);
 
 // Platform-specific frame extents (title bar, borders)
 // Returns the size of window decorations: left, right, top (title bar), bottom
-void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_left, int32_t* out_right, int32_t* out_top, int32_t* out_bottom);
+void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* opt_out_left, int32_t* opt_out_right, int32_t* opt_out_top, int32_t* opt_out_bottom);
 
 // Platform-specific input
-void ska_platform_warp_mouse(ska_window_t* ref_window, int32_t x, int32_t y);
 void ska_platform_show_cursor(bool show);
 void ska_platform_set_cursor(ska_system_cursor_ cursor);
 bool ska_platform_set_relative_mouse_mode(bool enabled);

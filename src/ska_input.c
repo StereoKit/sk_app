@@ -14,8 +14,19 @@ void ska_input_state_reset(ska_input_state_t* state) {
 	memset(state->keyboard, 0, sizeof(state->keyboard));
 	state->key_modifiers = 0;
 	state->mouse_buttons = 0;
-	state->mouse_xrel = 0;
-	state->mouse_yrel = 0;
+	state->mouse_xrel    = 0;
+	state->mouse_yrel    = 0;
+	state->mouse_delta_x = 0;
+	state->mouse_delta_y = 0;
+}
+
+// Motion is reported both ways because the two are consumed differently: events
+// carry a single delta, while a polling app wants everything since it last read.
+void ska_input_add_relative(int32_t xrel, int32_t yrel) {
+	g_ska.input_state.mouse_xrel    = xrel;
+	g_ska.input_state.mouse_yrel    = yrel;
+	g_ska.input_state.mouse_delta_x += xrel;
+	g_ska.input_state.mouse_delta_y += yrel;
 }
 
 uint16_t ska_input_state_derive_modifiers(const ska_input_state_t* state) {

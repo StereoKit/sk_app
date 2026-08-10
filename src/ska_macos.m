@@ -174,6 +174,43 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 	}
 }
 
+- (void)windowDidChangeBackingProperties:(NSNotification*)notification {
+	if (!self.window) return;
+
+	/* Fires when the window moves between 1x and 2x screens. The drawable
+	   follows the backing store, so a scale change is usually a resize too. */
+	NSWindow* nswindow = (NSWindow*)self.window->ns_window;
+	float scale = (float)[nswindow backingScaleFactor];
+	if (scale != self.window->dpi_scale) {
+		self.window->dpi_scale = scale;
+
+		ska_event_t event = {0};
+		event.type = ska_event_window_dpi_changed;
+		event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
+		event.window.window_id = self.window->id;
+		event.window.data1 = (int32_t)(scale * 100.0f + 0.5f);
+		ska_post_event(&event);
+	}
+
+	NSView* view = (NSView*)self.window->ns_view;
+	NSRect rect = [nswindow contentRectForFrameRect:[nswindow frame]];
+	NSRect backing_rect = [view convertRectToBacking:rect];
+	int32_t dw = (int32_t)backing_rect.size.width;
+	int32_t dh = (int32_t)backing_rect.size.height;
+	if (dw != self.window->drawable_width || dh != self.window->drawable_height) {
+		self.window->drawable_width  = dw;
+		self.window->drawable_height = dh;
+
+		ska_event_t event = {0};
+		event.type = ska_event_window_resized;
+		event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
+		event.window.window_id = self.window->id;
+		event.window.data1 = self.window->width;
+		event.window.data2 = self.window->height;
+		ska_post_event(&event);
+	}
+}
+
 - (void)windowDidMove:(NSNotification*)notification {
 	if (!self.window) return;
 
@@ -423,7 +460,7 @@ void ska_platform_window_set_title(ska_window_t* window, const char* title) {
 	}
 }
 
-void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_left, int32_t* out_right, int32_t* out_top, int32_t* out_bottom) {
+void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* opt_out_left, int32_t* opt_out_right, int32_t* opt_out_top, int32_t* opt_out_bottom) {
 	@autoreleasepool {
 		int32_t left = 0, right = 0, top = 0, bottom = 0;
 
@@ -438,10 +475,10 @@ void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_lef
 			top    = (int32_t)(frame_rect.size.height - 100 - bottom);
 		}
 
-		if (out_left)   *out_left   = left;
-		if (out_right)  *out_right  = right;
-		if (out_top)    *out_top    = top;
-		if (out_bottom) *out_bottom = bottom;
+		if (opt_out_left)   *opt_out_left   = left;
+		if (opt_out_right)  *opt_out_right  = right;
+		if (opt_out_top)    *opt_out_top    = top;
+		if (opt_out_bottom) *opt_out_bottom = bottom;
 	}
 }
 
@@ -539,13 +576,16 @@ void ska_platform_window_get_drawable_size(ska_window_t* window, int32_t* opt_ou
 
 float ska_platform_get_dpi_scale(const ska_window_t* window) {
 	@autoreleasepool {
-		/* macOS handles scaling transparently via backingScaleFactor.
-		 * The UI scale is built into the system and applications don't
-		 * need to manually scale fonts - Core Text does this automatically.
-		 * We return 1.0 here because macOS apps should use backingScaleFactor
-		 * only for rendering pixel-perfect content, not for UI scaling. */
-		(void)window;
-		return 1.0f;
+		/* backingScaleFactor is the ratio of backing pixels to points, which is
+		 * exactly the factor drawable size already differs from content size
+		 * by, so reporting it keeps the three consistent. Returning 1.0 here
+		 * used to leave callers unable to raster fonts at the display's
+		 * resolution: they would draw at 1x into a 2x backing store. */
+		if (window && window->ns_window) {
+			return (float)[(NSWindow*)window->ns_window backingScaleFactor];
+		}
+		NSScreen* screen = [NSScreen mainScreen];
+		return screen ? (float)[screen backingScaleFactor] : 1.0f;
 	}
 }
 
@@ -592,21 +632,6 @@ float ska_platform_get_refresh_rate(const ska_window_t* window) {
 	}
 }
 
-void ska_platform_warp_mouse(ska_window_t* window, int32_t x, int32_t y) {
-	@autoreleasepool {
-		NSWindow* nswindow = (NSWindow*)window->ns_window;
-		NSView* view = (NSView*)window->ns_view;
-
-		NSPoint point = NSMakePoint(x, window->height - y);  /* Flip Y */
-		point = [view convertPoint:point toView:nil];
-		point = [nswindow convertPointToScreen:point];
-
-		/* Convert to global screen coordinates */
-		CGPoint cgpoint = CGPointMake(point.x, [[NSScreen mainScreen] frame].size.height - point.y);
-		CGWarpMouseCursorPosition(cgpoint);
-	}
-}
-
 void ska_platform_set_cursor(ska_system_cursor_ cursor) {
 	NSCursor* ns_cursor = nil;
 
@@ -642,8 +667,14 @@ void ska_platform_show_cursor(bool show) {
 	}
 }
 
+// Sub-pixel remainder of relative-mode deltas, see the mouse-motion handler
+static double g_mac_rel_carry_x;
+static double g_mac_rel_carry_y;
+
 bool ska_platform_set_relative_mouse_mode(bool enabled) {
 	CGAssociateMouseAndMouseCursorPosition(enabled ? false : true);
+	g_mac_rel_carry_x = 0.0;
+	g_mac_rel_carry_y = 0.0;
 	if (enabled) {
 		[NSCursor hide];
 	} else {
@@ -719,15 +750,40 @@ void ska_platform_pump_events(void) {
 
 						event.type = ska_event_mouse_motion;
 						event.mouse_motion.window_id = window->id;
-						event.mouse_motion.x = x;
-						event.mouse_motion.y = y;
-						event.mouse_motion.xrel = x - g_ska.input_state.mouse_x;
-						event.mouse_motion.yrel = y - g_ska.input_state.mouse_y;
 
-						g_ska.input_state.mouse_x = x;
-						g_ska.input_state.mouse_y = y;
-						g_ska.input_state.mouse_xrel = event.mouse_motion.xrel;
-						g_ska.input_state.mouse_yrel = event.mouse_motion.yrel;
+						if (g_ska.input_state.relative_mouse_mode) {
+							/* CGAssociateMouseAndMouseCursorPosition(false) freezes the
+							   cursor, so locationInWindow stops changing and differencing
+							   it yields nothing. deltaX/deltaY still carry the motion. */
+							/* Deltas are fractional, so the leftover is carried rather
+							   than truncated, which is what keeps a slow drag moving. */
+							g_mac_rel_carry_x += nsevent.deltaX;
+							g_mac_rel_carry_y += nsevent.deltaY;
+
+							int32_t rel_x = (int32_t)g_mac_rel_carry_x;
+							int32_t rel_y = (int32_t)g_mac_rel_carry_y;
+							g_mac_rel_carry_x -= rel_x;
+							g_mac_rel_carry_y -= rel_y;
+
+							event.mouse_motion.x    = g_ska.input_state.mouse_x;
+							event.mouse_motion.y    = g_ska.input_state.mouse_y;
+							event.mouse_motion.xrel = rel_x;
+							event.mouse_motion.yrel = rel_y;
+						} else {
+							event.mouse_motion.x    = x;
+							event.mouse_motion.y    = y;
+							event.mouse_motion.xrel = x - g_ska.input_state.mouse_x;
+							event.mouse_motion.yrel = y - g_ska.input_state.mouse_y;
+
+							g_ska.input_state.mouse_x = x;
+							g_ska.input_state.mouse_y = y;
+						}
+
+						if (event.mouse_motion.xrel == 0 && event.mouse_motion.yrel == 0 &&
+						    g_ska.input_state.relative_mouse_mode) {
+							break;
+						}
+						ska_input_add_relative(event.mouse_motion.xrel, event.mouse_motion.yrel);
 
 						ska_post_event(&event);
 					}

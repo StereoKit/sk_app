@@ -188,13 +188,19 @@ SKA_API bool ska_init(const ska_settings_t* opt_settings) {
 		g_ska_allocator.user_data = NULL;
 	}
 
-
 	memset(&g_ska, 0, sizeof(g_ska));
 #ifdef SKA_PLATFORM_WIN32
 	QueryPerformanceFrequency(&g_qpc_frequency);
 #endif
 	// Must land after the memset above, not before it
 	g_ska.external_frame_driver = opt_settings ? opt_settings->external_frame_driver : false;
+	g_ska.app_id = opt_settings && opt_settings->app_id ? ska_strdup(opt_settings->app_id) : NULL;
+
+#ifdef SKA_PLATFORM_LINUX
+	// Requested preference only. ska_platform_init resolves it into the backend
+	// actually used, applying the SKA_VIDEODRIVER override and any fallback.
+	g_ska.backend = opt_settings ? opt_settings->linux_backend : ska_linux_backend_auto;
+#endif
 
 	g_ska.start_time = ska_get_time_ns();
 	g_ska.next_window_id = 1;
@@ -229,6 +235,11 @@ SKA_API void ska_shutdown(void) {
 	if (g_kvpstore_app_name) {
 		ska_free(g_kvpstore_app_name);
 		g_kvpstore_app_name = NULL;
+	}
+
+	if (g_ska.app_id) {
+		ska_free(g_ska.app_id);
+		g_ska.app_id = NULL;
 	}
 
 	g_ska.initialized = false;
@@ -493,7 +504,18 @@ SKA_API void* ska_window_get_native_handle(const ska_window_t* window) {
 #ifdef SKA_PLATFORM_WIN32
 	return (void*)window->hwnd;
 #elif defined(SKA_PLATFORM_LINUX)
+	// Type differs per backend: an X11 Window id, or a wl_surface*. Callers
+	// distinguish with ska_linux_get_backend().
+	#ifdef SKA_LINUX_WAYLAND
+	if (g_ska.backend == ska_linux_backend_wayland) {
+		return ska_wl_get_native_handle(window);
+	}
+	#endif
+	#ifdef SKA_LINUX_X11
 	return (void*)(uintptr_t)window->xwindow;
+	#else
+	return NULL;
+	#endif
 #elif defined(SKA_PLATFORM_MACOS)
 	return window->ns_window;
 #elif defined(SKA_PLATFORM_ANDROID)
@@ -663,11 +685,6 @@ SKA_API uint32_t ska_mouse_get_global_state(int32_t* opt_out_x, int32_t* opt_out
 	return ska_mouse_get_state(opt_out_x, opt_out_y);
 }
 
-SKA_API void ska_mouse_warp(ska_window_t* ref_window, int32_t x, int32_t y) {
-	if (!ref_window) return;
-	ska_platform_warp_mouse(ref_window, x, y);
-}
-
 SKA_API void ska_cursor_set(ska_system_cursor_ cursor) {
 	ska_platform_set_cursor(cursor);
 }
@@ -680,9 +697,20 @@ SKA_API void ska_cursor_show(bool show) {
 SKA_API bool ska_mouse_set_relative_mode(bool enabled) {
 	if (ska_platform_set_relative_mouse_mode(enabled)) {
 		g_ska.input_state.relative_mouse_mode = enabled;
+		// Ordinary motion accumulates too, so without this the first read after
+		// entering relative mode returns every pixel moved since startup.
+		g_ska.input_state.mouse_delta_x = 0;
+		g_ska.input_state.mouse_delta_y = 0;
 		return true;
 	}
 	return false;
+}
+
+SKA_API void ska_mouse_get_delta(int32_t* opt_out_x, int32_t* opt_out_y) {
+	if (opt_out_x) *opt_out_x = g_ska.input_state.mouse_delta_x;
+	if (opt_out_y) *opt_out_y = g_ska.input_state.mouse_delta_y;
+	g_ska.input_state.mouse_delta_x = 0;
+	g_ska.input_state.mouse_delta_y = 0;
 }
 
 SKA_API bool ska_mouse_get_relative_mode(void) {
@@ -1028,12 +1056,24 @@ SKA_API void* ska_win32_get_hinstance(void) {
 
 #ifdef SKA_PLATFORM_LINUX
 SKA_API void* ska_linux_get_x11_display(void) {
+#ifdef SKA_LINUX_X11
 	return g_ska.x_display;
+#else
+	return NULL;
+#endif
 }
 
 SKA_API void* ska_linux_get_wayland_display(void) {
-	// Not implemented yet
+#ifdef SKA_LINUX_WAYLAND
+	if (g_ska.backend == ska_linux_backend_wayland) {
+		return ska_wl_get_display();
+	}
+#endif
 	return NULL;
+}
+
+SKA_API ska_linux_backend_ ska_linux_get_backend(void) {
+	return g_ska.backend;
 }
 #endif
 

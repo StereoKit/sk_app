@@ -744,8 +744,7 @@ static bool ska_android_post_motion(int32_t action_masked, int32_t source,
 
 		g_ska.input_state.mouse_x    = ix;
 		g_ska.input_state.mouse_y    = iy;
-		g_ska.input_state.mouse_xrel = ev.mouse_motion.xrel;
-		g_ska.input_state.mouse_yrel = ev.mouse_motion.yrel;
+		ska_input_add_relative(ev.mouse_motion.xrel, ev.mouse_motion.yrel);
 
 		ska_post_event(&ev);
 		return true;
@@ -766,8 +765,7 @@ static bool ska_android_post_motion(int32_t action_masked, int32_t source,
 
 				g_ska.input_state.mouse_x    = ix;
 				g_ska.input_state.mouse_y    = iy;
-				g_ska.input_state.mouse_xrel = ev.mouse_motion.xrel;
-				g_ska.input_state.mouse_yrel = ev.mouse_motion.yrel;
+				ska_input_add_relative(ev.mouse_motion.xrel, ev.mouse_motion.yrel);
 
 				ska_post_event(&ev);
 			}
@@ -801,8 +799,7 @@ static bool ska_android_post_motion(int32_t action_masked, int32_t source,
 
 				g_ska.input_state.mouse_x    = ix;
 				g_ska.input_state.mouse_y    = iy;
-				g_ska.input_state.mouse_xrel = ev.mouse_motion.xrel;
-				g_ska.input_state.mouse_yrel = ev.mouse_motion.yrel;
+				ska_input_add_relative(ev.mouse_motion.xrel, ev.mouse_motion.yrel);
 
 				ska_post_event(&ev);
 			}
@@ -833,8 +830,7 @@ static bool ska_android_post_motion(int32_t action_masked, int32_t source,
 
 			g_ska.input_state.mouse_x    = ix;
 			g_ska.input_state.mouse_y    = iy;
-			g_ska.input_state.mouse_xrel = ev.mouse_motion.xrel;
-			g_ska.input_state.mouse_yrel = ev.mouse_motion.yrel;
+			ska_input_add_relative(ev.mouse_motion.xrel, ev.mouse_motion.yrel);
 
 			ska_post_event(&ev);
 			return true;
@@ -1302,13 +1298,13 @@ void ska_platform_window_set_frame_size(ska_window_t* window, int32_t w, int32_t
 	ska_android_run_on_ui_thread(ska_set_layout_params_cb, lc);
 }
 
-void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_left, int32_t* out_right, int32_t* out_top, int32_t* out_bottom) {
+void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* opt_out_left, int32_t* opt_out_right, int32_t* opt_out_top, int32_t* opt_out_bottom) {
 	// In freeform/DEX mode, windows may have decorations (title bar, borders)
 	// We get these via getWindow().getDecorView() dimensions vs content view
-	if (out_left)   *out_left   = 0;
-	if (out_right)  *out_right  = 0;
-	if (out_top)    *out_top    = 0;
-	if (out_bottom) *out_bottom = 0;
+	if (opt_out_left)   *opt_out_left   = 0;
+	if (opt_out_right)  *opt_out_right  = 0;
+	if (opt_out_top)    *opt_out_top    = 0;
+	if (opt_out_bottom) *opt_out_bottom = 0;
 
 	if (!window || !window->native_window) {
 		return;
@@ -1343,11 +1339,11 @@ void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_lef
 
 			// Assume symmetric horizontal borders (if any)
 			int32_t left = total_h_diff / 2;
-			if (out_left)   *out_left   = left;
-			if (out_right)  *out_right  = total_h_diff - left;
+			if (opt_out_left)   *opt_out_left   = left;
+			if (opt_out_right)  *opt_out_right  = total_h_diff - left;
 			// Title bar at top, no bottom border typically
-			if (out_top)    *out_top    = total_v_diff;
-			if (out_bottom) *out_bottom = 0;
+			if (opt_out_top)    *opt_out_top    = total_v_diff;
+			if (opt_out_bottom) *opt_out_bottom = 0;
 
 			(*env)->DeleteLocalRef(env, decor_view);
 		}
@@ -1464,11 +1460,6 @@ float ska_platform_get_refresh_rate(const ska_window_t* window) {
 	(*env)->DeleteLocalRef(env, display);
 
 	return (float)rate;
-}
-
-void ska_platform_warp_mouse(ska_window_t* window, int32_t x, int32_t y) {
-	// Cannot warp cursor on touchscreen
-	(void)window; (void)x; (void)y;
 }
 
 void ska_platform_set_cursor(ska_system_cursor_ cursor) {

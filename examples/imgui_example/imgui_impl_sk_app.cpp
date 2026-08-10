@@ -180,6 +180,17 @@ void ImGui_ImplSkApp_Shutdown()
 	delete bd;
 }
 
+// Screen coordinates to the pixels io.DisplaySize is expressed in. This is the
+// drawable ratio rather than the DPI scale, which keeps the math exact even
+// where the two differ by rounding.
+static float ImGui_ImplSkApp_InputScale(ska_window_t* window)
+{
+	int32_t w, h, dw, dh;
+	ska_window_get_content_size (window, &w,  &h);
+	ska_window_get_drawable_size(window, &dw, &dh);
+	return w > 0 ? (float)dw / (float)w : 1.0f;
+}
+
 float ImGui_ImplSkApp_GetDpiScale()
 {
 	ImGui_ImplSkApp_Data* bd = ImGui_ImplSkApp_GetBackendData();
@@ -195,24 +206,25 @@ void ImGui_ImplSkApp_NewFrame()
 
 	ImGuiIO& io = ImGui::GetIO();
 
-	// Setup display size (content area, not frame)
-	int32_t w, h;
+	// ImGui is driven entirely in pixels here: the display size is the drawable
+	// size, the style is scaled by the DPI factor, and fonts are rasterized at
+	// that factor. Mouse input arrives in screen coordinates and is scaled to
+	// match, so DisplayFramebufferScale stays at one.
 	int32_t display_w, display_h;
-	ska_window_get_content_size(bd->window, &w, &h);
 	ska_window_get_drawable_size(bd->window, &display_w, &display_h);
-	io.DisplaySize = ImVec2((float)w, (float)h);
-	if (w > 0 && h > 0)
-		io.DisplayFramebufferScale = ImVec2((float)display_w / w, (float)display_h / h);
+	io.DisplaySize             = ImVec2((float)display_w, (float)display_h);
+	io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
 
 	// Setup time step
 	double current_time = ska_time_get_elapsed_s();
 	io.DeltaTime = bd->time > 0.0 ? (float)(current_time - bd->time) : (1.0f / 60.0f);
 	bd->time = current_time;
 
-	// Update mouse position
+	// Mouse state is in screen coordinates; ImGui is in pixels
+	float   scale = ImGui_ImplSkApp_InputScale(bd->window);
 	int32_t mouse_x, mouse_y;
 	ska_mouse_get_state(&mouse_x, &mouse_y);
-	io.AddMousePosEvent((float)mouse_x, (float)mouse_y);
+	io.AddMousePosEvent((float)mouse_x * scale, (float)mouse_y * scale);
 
 	// Update mouse cursor shape
 	if (io.ConfigFlags & ImGuiConfigFlags_NoMouseCursorChange)
@@ -256,7 +268,10 @@ bool ImGui_ImplSkApp_ProcessEvent(const ska_event_t* event)
 	{
 		case ska_event_mouse_motion:
 		{
-			io.AddMousePosEvent((float)event->mouse_motion.x, (float)event->mouse_motion.y);
+			// Screen coordinates in, pixels out, matching io.DisplaySize
+			float scale = bd ? ImGui_ImplSkApp_InputScale(bd->window) : 1.0f;
+			io.AddMousePosEvent((float)event->mouse_motion.x * scale,
+			                    (float)event->mouse_motion.y * scale);
 			return true;
 		}
 

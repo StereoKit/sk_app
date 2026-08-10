@@ -174,10 +174,37 @@ static uint16_t ska_win32_get_modifiers(void) {
 static HCURSOR g_current_cursor = NULL;
 static HCURSOR g_win32_cursors[ska_system_cursor_count_] = {0};
 
-// GetDpiForWindow is only available on Windows 10 1607+
+// GetDpiForWindow and AdjustWindowRectExForDpi are only available on
+// Windows 10 1607+
 typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
-static PFN_GetDpiForWindow g_pfnGetDpiForWindow = NULL;
-static bool                g_dpi_func_loaded    = false;
+typedef BOOL (WINAPI *PFN_AdjustWindowRectExForDpi)(LPRECT, DWORD, BOOL, DWORD, UINT);
+static PFN_GetDpiForWindow           g_pfnGetDpiForWindow          = NULL;
+static PFN_AdjustWindowRectExForDpi  g_pfnAdjustWindowRectExForDpi = NULL;
+static bool                          g_dpi_func_loaded             = false;
+
+static void ska_win32_load_dpi_funcs(void) {
+	if (g_dpi_func_loaded) return;
+	g_dpi_func_loaded = true;
+
+	// LoadLibraryW rather than GetModuleHandleW, which may return NULL. The
+	// module intentionally stays loaded for the life of the process.
+	HMODULE user32 = LoadLibraryW(L"user32.dll");
+	if (!user32) return;
+	g_pfnGetDpiForWindow          = (PFN_GetDpiForWindow)          (void(*)(void))GetProcAddress(user32, "GetDpiForWindow");
+	g_pfnAdjustWindowRectExForDpi = (PFN_AdjustWindowRectExForDpi) (void(*)(void))GetProcAddress(user32, "AdjustWindowRectExForDpi");
+}
+
+// AdjustWindowRectEx answers for 96 DPI no matter where the window is; the
+// ForDpi variant sizes the frame for the window's real monitor. opt_window is
+// NULL before the window exists, where 96 DPI is the only answer available.
+static void ska_win32_adjust_rect(RECT* ref_rect, DWORD style, DWORD ex_style, const ska_window_t* opt_window) {
+	ska_win32_load_dpi_funcs();
+	if (g_pfnAdjustWindowRectExForDpi && g_pfnGetDpiForWindow && opt_window && opt_window->hwnd) {
+		g_pfnAdjustWindowRectExForDpi(ref_rect, style, FALSE, ex_style, g_pfnGetDpiForWindow(opt_window->hwnd));
+		return;
+	}
+	AdjustWindowRectEx(ref_rect, style, FALSE, ex_style);
+}
 
 // SetProcessDpiAwarenessContext is available on Windows 10 1703+
 // DPI_AWARENESS_CONTEXT is a handle type (HANDLE on newer SDKs, void* for compatibility)
@@ -233,15 +260,18 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 					ska_post_event(&event);
 				}
 
-				if (width != window->width || height != window->height) {
-					event.type = ska_event_window_resized;
-					event.window.window_id = window->id;
-					event.window.data1 = width;
-					event.window.data2 = height;
-					window->width  = width;
-					window->height = height;
+				// WM_SIZE carries pixels; the content size and the event
+				// payload are both screen coordinates.
+				if (width != window->drawable_width || height != window->drawable_height) {
 					window->drawable_width  = width;
 					window->drawable_height = height;
+					window->width           = ska_to_logical(window, width);
+					window->height          = ska_to_logical(window, height);
+
+					event.type             = ska_event_window_resized;
+					event.window.window_id = window->id;
+					event.window.data1     = window->width;
+					event.window.data2     = window->height;
 					ska_post_event(&event);
 				}
 			}
@@ -250,8 +280,9 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 
 		case WM_MOVE: {
 			if (window) {
-				int32_t x = (int)(short)LOWORD(lparam);
-				int32_t y = (int)(short)HIWORD(lparam);
+				// WM_MOVE carries pixels; positions are screen coordinates
+				int32_t x = ska_to_logical(window, (int)(short)LOWORD(lparam));
+				int32_t y = ska_to_logical(window, (int)(short)HIWORD(lparam));
 
 				if (x != window->x || y != window->y) {
 					event.type = ska_event_window_moved;
@@ -339,10 +370,43 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 			return 0;
 		}
 
+		// Raw input is the only unaccelerated, unclamped motion Windows offers, so
+		// relative mode reads it instead of differencing cursor positions.
+		case WM_INPUT: {
+			// Always falls through to DefWindowProc: the system needs it to
+			// free the input buffer.
+			if (!g_ska.input_state.relative_mouse_mode || !window) break;
+
+			// Some drivers append data past RAWINPUT, so give headroom; a
+			// still-larger packet is dropped rather than read truncated.
+			union { RAWINPUT raw; BYTE bytes[sizeof(RAWINPUT) + 64]; } data = {0};
+			UINT size = sizeof(data);
+			if (GetRawInputData((HRAWINPUT)lparam, RID_INPUT, &data, &size, sizeof(RAWINPUTHEADER)) == (UINT)-1) break;
+			if (data.raw.header.dwType != RIM_TYPEMOUSE) break;
+
+			// Absolute mode comes from tablets and remote desktop, where the
+			// values are a position rather than a delta and mean nothing here.
+			if (data.raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) break;
+
+			int32_t rel_x = data.raw.data.mouse.lLastX;
+			int32_t rel_y = data.raw.data.mouse.lLastY;
+			if (rel_x == 0 && rel_y == 0) break;
+
+			event.type                   = ska_event_mouse_motion;
+			event.mouse_motion.window_id = window->id;
+			event.mouse_motion.x         = g_ska.input_state.mouse_x;
+			event.mouse_motion.y         = g_ska.input_state.mouse_y;
+			event.mouse_motion.xrel      = rel_x;
+			event.mouse_motion.yrel      = rel_y;
+			ska_input_add_relative(rel_x, rel_y);
+			ska_post_event(&event);
+			break;
+		}
+
 		case WM_MOUSEMOVE: {
 			if (window) {
-				int32_t x = GET_X_LPARAM(lparam);
-				int32_t y = GET_Y_LPARAM(lparam);
+				int32_t x = ska_to_logical(window, GET_X_LPARAM(lparam));
+				int32_t y = ska_to_logical(window, GET_Y_LPARAM(lparam));
 
 				if (!window->tracking_mouse_leave) {
 					TRACKMOUSEEVENT tme = {0};
@@ -358,6 +422,10 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 					ska_post_event(&event);
 				}
 
+				// WM_INPUT already carries this motion unaccelerated, and in
+				// relative mode the absolute position stays frozen.
+				if (g_ska.input_state.relative_mouse_mode) return 0;
+
 				event.type = ska_event_mouse_motion;
 				event.mouse_motion.window_id = window->id;
 				event.mouse_motion.x = x;
@@ -367,9 +435,8 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 
 				g_ska.input_state.mouse_x = x;
 				g_ska.input_state.mouse_y = y;
-				g_ska.input_state.mouse_xrel = event.mouse_motion.xrel;
-				g_ska.input_state.mouse_yrel = event.mouse_motion.yrel;
 
+				ska_input_add_relative(event.mouse_motion.xrel, event.mouse_motion.yrel);
 				ska_post_event(&event);
 			}
 			return 0;
@@ -414,8 +481,8 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 				event.mouse_button.button = button;
 				event.mouse_button.pressed = pressed;
 				event.mouse_button.clicks = 1;
-				event.mouse_button.x = GET_X_LPARAM(lparam);
-				event.mouse_button.y = GET_Y_LPARAM(lparam);
+				event.mouse_button.x = ska_to_logical(window, GET_X_LPARAM(lparam));
+				event.mouse_button.y = ska_to_logical(window, GET_Y_LPARAM(lparam));
 
 				// Update button state
 				uint32_t button_mask = (1 << (button - 1));
@@ -586,14 +653,16 @@ bool ska_platform_window_create(
 		style |= WS_VISIBLE;
 	}
 
-	// Adjust for window decorations
+	// Adjust for window decorations. The scale is unknown until the window
+	// exists, so this first pass guesses 96 DPI; the fixup below corrects it.
 	RECT rect = { 0, 0, w, h };
-	AdjustWindowRectEx(&rect, style, FALSE, ex_style);
+	ska_win32_adjust_rect(&rect, style, ex_style, NULL);
 	int32_t adj_width = rect.right - rect.left;
 	int32_t adj_height = rect.bottom - rect.top;
 
 	// Center window if requested
-	if (x == -1 || y == -1) {
+	bool centered = (x == -1 || y == -1);
+	if (centered) {
 		int32_t screen_width = GetSystemMetrics(SM_CXSCREEN);
 		int32_t screen_height = GetSystemMetrics(SM_CYSCREEN);
 		x = (screen_width - adj_width) / 2;
@@ -626,18 +695,40 @@ bool ska_platform_window_create(
 	// Initialize DPI scale (before WM_DPICHANGED can fire)
 	window->dpi_scale = ska_platform_get_dpi_scale(window);
 
+	// The scale comes from GetDpiForWindow, which needs a window, so the
+	// window is created at the requested size and then grown to the pixel size
+	// those screen coordinates cover. Resizing here rather than guessing the
+	// monitor up front keeps the scale correct on multi-DPI setups. Position
+	// moves with it: a centered window re-centers at the real size, and an
+	// explicit one converts to pixels like everything else.
+	if (window->dpi_scale != 1.0f) {
+		RECT scaled = {0, 0, ska_to_pixels(window, w), ska_to_pixels(window, h)};
+		ska_win32_adjust_rect(&scaled, style, ex_style, window);
+		int32_t scaled_w = scaled.right - scaled.left;
+		int32_t scaled_h = scaled.bottom - scaled.top;
+		if (centered) {
+			x = (GetSystemMetrics(SM_CXSCREEN) - scaled_w) / 2;
+			y = (GetSystemMetrics(SM_CYSCREEN) - scaled_h) / 2;
+		} else {
+			x = ska_to_pixels(window, x);
+			y = ska_to_pixels(window, y);
+		}
+		SetWindowPos(window->hwnd, NULL, x, y, scaled_w, scaled_h,
+			SWP_NOZORDER | SWP_NOACTIVATE);
+	}
+
 	// Get actual window position and size
 	RECT client_rect;
 	GetClientRect(window->hwnd, &client_rect);
-	window->width  = client_rect.right - client_rect.left;
-	window->height = client_rect.bottom - client_rect.top;
-	window->drawable_width  = window->width;
-	window->drawable_height = window->height;
+	window->drawable_width  = client_rect.right - client_rect.left;
+	window->drawable_height = client_rect.bottom - client_rect.top;
+	window->width  = ska_to_logical(window, window->drawable_width);
+	window->height = ska_to_logical(window, window->drawable_height);
 
 	RECT window_rect;
 	GetWindowRect(window->hwnd, &window_rect);
-	window->x = window_rect.left;
-	window->y = window_rect.top;
+	window->x = ska_to_logical(window, window_rect.left);
+	window->y = ska_to_logical(window, window_rect.top);
 
 	// Set initial window state
 	if (flags & ska_window_maximized) {
@@ -674,7 +765,7 @@ void ska_platform_window_set_title(ska_window_t* window, const char* title) {
 	window->title = ska_strdup(title);
 }
 
-void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_left, int32_t* out_right, int32_t* out_top, int32_t* out_bottom) {
+void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* opt_out_left, int32_t* opt_out_right, int32_t* opt_out_top, int32_t* opt_out_bottom) {
 	int32_t left = 0, right = 0, top = 0, bottom = 0;
 
 	if (window && window->hwnd) {
@@ -683,7 +774,7 @@ void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_lef
 
 		// Use a zero rect to calculate just the frame sizes
 		RECT rect = {0, 0, 0, 0};
-		AdjustWindowRectEx(&rect, style, FALSE, ex_style);
+		ska_win32_adjust_rect(&rect, style, ex_style, window);
 
 		left   = -rect.left;
 		right  = rect.right;
@@ -691,17 +782,20 @@ void ska_platform_get_frame_extents(const ska_window_t* window, int32_t* out_lef
 		bottom = rect.bottom;
 	}
 
-	if (out_left)   *out_left   = left;
-	if (out_right)  *out_right  = right;
-	if (out_top)    *out_top    = top;
-	if (out_bottom) *out_bottom = bottom;
+	// AdjustWindowRectEx works in pixels, but the caller adds these to the
+	// content size, which is in screen coordinates.
+	if (opt_out_left)   *opt_out_left   = ska_to_logical(window, left);
+	if (opt_out_right)  *opt_out_right  = ska_to_logical(window, right);
+	if (opt_out_top)    *opt_out_top    = ska_to_logical(window, top);
+	if (opt_out_bottom) *opt_out_bottom = ska_to_logical(window, bottom);
 }
 
 void ska_platform_window_set_frame_position(ska_window_t* window, int32_t x, int32_t y) {
-	SetWindowPos(window->hwnd, NULL, x, y, 0, 0,
+	SetWindowPos(window->hwnd, NULL, ska_to_pixels(window, x), ska_to_pixels(window, y), 0, 0,
 	             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 
-	// Update cached content position
+	// Update cached content position. x and the extents are both screen
+	// coordinates, so this stays in one unit.
 	int32_t left, top;
 	ska_platform_get_frame_extents(window, &left, NULL, &top, NULL);
 	window->x = x + left;
@@ -712,8 +806,8 @@ void ska_platform_window_set_frame_size(ska_window_t* window, int32_t w, int32_t
 	DWORD style    = GetWindowLong(window->hwnd, GWL_STYLE);
 	DWORD ex_style = GetWindowLong(window->hwnd, GWL_EXSTYLE);
 
-	RECT rect = {0, 0, w, h};
-	AdjustWindowRectEx(&rect, style, FALSE, ex_style);
+	RECT rect = {0, 0, ska_to_pixels(window, w), ska_to_pixels(window, h)};
+	ska_win32_adjust_rect(&rect, style, ex_style, window);
 
 	SetWindowPos(window->hwnd, NULL, 0, 0,
 	             rect.right - rect.left, rect.bottom - rect.top,
@@ -762,15 +856,7 @@ void ska_platform_window_get_drawable_size(ska_window_t* window, int32_t* opt_ou
 
 float ska_platform_get_dpi_scale(const ska_window_t* window) {
 	// Try to use GetDpiForWindow (Windows 10 1607+)
-	if (!g_dpi_func_loaded) {
-		g_dpi_func_loaded = true;
-		// Use LoadLibraryW to ensure user32.dll is loaded (GetModuleHandleW may return NULL)
-		HMODULE user32 = LoadLibraryW(L"user32.dll");
-		if (user32) {
-			g_pfnGetDpiForWindow = (PFN_GetDpiForWindow)(void(*)(void))GetProcAddress(user32, "GetDpiForWindow");
-			// Note: We intentionally don't FreeLibrary - user32.dll stays loaded for the process lifetime
-		}
-	}
+	ska_win32_load_dpi_funcs();
 
 	if (g_pfnGetDpiForWindow && window && window->hwnd) {
 		UINT dpi = g_pfnGetDpiForWindow(window->hwnd);
@@ -826,12 +912,6 @@ float ska_platform_get_refresh_rate(const ska_window_t* window) {
 	return (float)dm.dmDisplayFrequency;
 }
 
-void ska_platform_warp_mouse(ska_window_t* window, int32_t x, int32_t y) {
-	POINT pt = { x, y };
-	ClientToScreen(window->hwnd, &pt);
-	SetCursorPos(pt.x, pt.y);
-}
-
 void ska_platform_set_cursor(ska_system_cursor_ cursor) {
 	// Win32 system cursor mappings (IDC_* are MAKEINTRESOURCE macros)
 	const LPCWSTR win32_cursor_ids[] = {
@@ -866,10 +946,37 @@ void ska_platform_show_cursor(bool show) {
 	ShowCursor(show ? TRUE : FALSE);
 }
 
+static bool g_win32_relative;
+
+static ska_window_t* ska_win32_focused_window(void) {
+	for (uint32_t i = 0; i < SKA_MAX_WINDOWS; i++) {
+		if (g_ska.windows[i] && g_ska.windows[i]->has_focus) return g_ska.windows[i];
+	}
+	return g_ska.windows[0];
+}
+
 bool ska_platform_set_relative_mouse_mode(bool enabled) {
+	if (enabled == g_win32_relative) return true;
+
+	// Usage page 1, usage 2 is the generic desktop mouse. A NULL target makes
+	// raw input follow the keyboard focus, so it reaches whichever of our
+	// windows is active and survives any one window being destroyed.
+	RAWINPUTDEVICE rid = {0};
+	rid.usUsagePage = 0x01;
+	rid.usUsage     = 0x02;
+	rid.dwFlags     = enabled ? 0 : RIDEV_REMOVE;
+	rid.hwndTarget  = NULL;
+	if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+		if (enabled) {
+			ska_set_error("ska_mouse_set_relative_mode: RegisterRawInputDevices failed");
+			return false;
+		}
+	}
+
 	if (enabled) {
-		// Clip cursor to client area
-		ska_window_t* window = g_ska.windows[0];  // Use first window
+		// Raw input keeps arriving past the edges, but a cursor that wanders off
+		// the window would still take clicks elsewhere.
+		ska_window_t* window = ska_win32_focused_window();
 		if (window && window->hwnd) {
 			RECT rect;
 			GetClientRect(window->hwnd, &rect);
@@ -877,9 +984,14 @@ bool ska_platform_set_relative_mouse_mode(bool enabled) {
 			ClientToScreen(window->hwnd, (POINT*)&rect.right);
 			ClipCursor(&rect);
 		}
+		// ShowCursor is a counter, so the one hide here and the one show below
+		// land back on whatever visibility the app had chosen.
+		ShowCursor(FALSE);
 	} else {
 		ClipCursor(NULL);
+		ShowCursor(TRUE);
 	}
+	g_win32_relative = enabled;
 	return true;
 }
 

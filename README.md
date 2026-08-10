@@ -8,9 +8,27 @@ From the project root:
 
 ### Linux
 
+Linux has both a Wayland and an X11 backend, picked at runtime. Wayland is
+preferred when a compositor is present, and X11 is used otherwise. Neither
+library is linked: both are loaded with `dlopen`, so one binary runs on a
+Wayland-only system, an X11-only system, or headless. Override the choice with
+`SKA_VIDEODRIVER=wayland|x11`, or the `linux_backend` field in `ska_settings_t`.
+
+Only headers are needed to build. The Wayland protocol sources are generated
+ahead of time and committed under `src/wayland`, so neither
+`wayland-scanner` nor `wayland-protocols` is a build dependency; refresh them
+with `tools/gen_wayland_protocols.sh` when adding a protocol.
+
+Windows always render at the display's native resolution: sizes are screen
+coordinates, `ska_window_get_drawable_size` is the pixel framebuffer, and
+`ska_window_get_dpi_scale` is the factor to raster UI by. For an application
+icon, install a `.desktop` file and set `ska_settings_t.app_id` to match its
+`StartupWMClass`; this is the only way a Wayland window gets one.
+
 ```sh
 # Dependencies
-sudo apt-get install cmake libx11-dev libxrandr-dev libxcursor-dev
+sudo apt-get install cmake libx11-dev libxrandr-dev libxcursor-dev libxi-dev \
+                     libwayland-dev libxkbcommon-dev libdecor-0-dev
 
 # To configure
 cmake -B build
@@ -115,6 +133,5 @@ adb logcat -v color --uid `adb shell pm list package -U net.stereokit.test_windo
    SPACE     - Rename window title
    C         - Toggle cursor visibility
    V         - Toggle relative mouse mode
-   W         - Warp mouse to center
    Mouse     - Move and click
    Wheel     - Scroll

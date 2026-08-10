@@ -23,6 +23,17 @@ typedef struct window_geometry_t {
 
 #define WINDOW_GEOMETRY_MAGIC 0x57494E47 // "WING"
 
+// Content size is logical, drawable size is pixels, and the surface has to
+// match the drawable or the compositor scales the result.
+static void print_sizes(ska_window_t* window, const skr_surface_t* surface, const char* when) {
+	int32_t     cw, ch, dw, dh;
+	skr_vec2i_t ss = skr_surface_get_size(surface);
+	ska_window_get_content_size (window, &cw, &ch);
+	ska_window_get_drawable_size(window, &dw, &dh);
+	printf("[SIZE] %-7s content %dx%d, drawable %dx%d, surface %dx%d, scale %.2f\n",
+		when, cw, ch, dw, dh, ss.x, ss.y, ska_window_get_dpi_scale(window));
+}
+
 int32_t main(int argc, char** argv) {
 	(void)argc;
 	(void)argv;
@@ -115,9 +126,12 @@ int32_t main(int argc, char** argv) {
 
 	printf("[VULKAN] Surface created\n");
 
-	// Create sk_renderer surface
+	// Create sk_renderer surface. Surfaces that cannot report their own size,
+	// Wayland and WebGPU, take it from here instead.
 	skr_surface_t surface = {0};
-	if (skr_surface_create(vk_surface, &surface) != skr_err_success || surface.surface == VK_NULL_HANDLE) {
+	skr_vec2i_t   drawable = {0};
+	ska_window_get_drawable_size(window, &drawable.x, &drawable.y);
+	if (skr_surface_create(vk_surface, drawable, &surface) != skr_err_success || surface.surface == VK_NULL_HANDLE) {
 		skr_log(skr_log_critical, "Failed to create sk_renderer surface!");
 		vkDestroySurfaceKHR(skr_get_vk_instance(), vk_surface, NULL);
 		skr_shutdown();
@@ -144,17 +158,19 @@ int32_t main(int argc, char** argv) {
 		return 1;
 	}
 
-	// Scale UI for high-DPI displays
-	float dpi_scale = ImGui_ImplSkApp_GetDpiScale();
+	// Scale the UI for high-DPI displays. ImGui works in pixels, so the font is
+	// rasterized at the display's scale and the style is scaled to match.
+	// The unscaled style is kept so a later DPI change rescales from it rather
+	// than compounding on an already-scaled one.
+	ImGuiStyle base_style = *igGetStyle();
+	float      dpi_scale  = ImGui_ImplSkApp_GetDpiScale();
 	printf("[DPI] Scale factor: %.2f\n", dpi_scale);
 	if (dpi_scale != 1.0f) {
-		// Scale fonts (rebuild at larger size for crisp text)
 		ImFontConfig* font_config = ImFontConfig_ImFontConfig();
 		font_config->SizePixels = 13.0f * dpi_scale;
 		ImFontAtlas_AddFontDefault(io->Fonts, font_config);
 		ImFontConfig_destroy(font_config);
 
-		// Scale UI element sizes (padding, borders, etc.)
 		ImGuiStyle_ScaleAllSizes(igGetStyle(), dpi_scale);
 	}
 
@@ -170,6 +186,7 @@ int32_t main(int argc, char** argv) {
 	}
 
 	printf("[IMGUI] Dear ImGui initialized\n");
+	print_sizes(window, &surface, "startup");
 	printf("\n[CONTROLS] ESC to exit\n");
 	printf("[INFO] This demo shows the Dear ImGui demo window\n\n");
 
@@ -219,7 +236,9 @@ int32_t main(int argc, char** argv) {
 						running = false;
 						break;
 					}
-					if (skr_surface_create(vk_surface, &surface) != skr_err_success) {
+					skr_vec2i_t shown_size = {0};
+					ska_window_get_drawable_size(window, &shown_size.x, &shown_size.y);
+					if (skr_surface_create(vk_surface, shown_size, &surface) != skr_err_success) {
 						fprintf(stderr, "Failed to recreate skr_surface\n");
 						vkDestroySurfaceKHR(skr_get_vk_instance(), vk_surface, NULL);
 						running = false;
@@ -229,7 +248,25 @@ int32_t main(int argc, char** argv) {
 
 				case ska_event_window_resized:
 					printf("[EVENT] Window resized to %dx%d\n", event.window.data1, event.window.data2);
-					skr_surface_resize(&surface);
+					break;
+
+				case ska_event_window_dpi_changed:
+					// Fonts are rasterized for one scale, so a new one means a
+					// new atlas and a restyle. The style scales from a pristine
+					// copy, since ScaleAllSizes compounds if applied twice.
+					printf("[EVENT] DPI changed to %d%%\n", event.window.data1);
+					dpi_scale = ImGui_ImplSkApp_GetDpiScale();
+					ImFontAtlas_Clear(io->Fonts);
+					{
+						ImFontConfig* cfg = ImFontConfig_ImFontConfig();
+						cfg->SizePixels = 13.0f * dpi_scale;
+						ImFontAtlas_AddFontDefault(io->Fonts, cfg);
+						ImFontConfig_destroy(cfg);
+					}
+					ImGui_ImplSkRenderer_CreateFontsTexture();
+					*igGetStyle() = base_style;
+					ImGuiStyle_ScaleAllSizes(igGetStyle(), dpi_scale);
+					print_sizes(window, &surface, "dpi");
 					break;
 
 				case ska_event_key_down:
@@ -311,9 +348,18 @@ int32_t main(int argc, char** argv) {
 		// Begin rendering frame
 		skr_renderer_frame_begin();
 
-		// Get next swapchain image
+		// Get next swapchain image. Resizing right away and retrying keeps
+		// frames flowing through an interactive drag, which delivers a new
+		// size every frame.
+		skr_vec2i_t drawable = {0};
+		ska_window_get_drawable_size(window, &drawable.x, &drawable.y);
 		skr_tex_t*   render_target  = NULL;
-		skr_acquire_ acquire_result = skr_surface_next_tex(&surface, &render_target);
+		skr_acquire_ acquire_result = skr_surface_next_tex(&surface, drawable, &render_target);
+		if (acquire_result == skr_acquire_needs_resize) {
+			skr_surface_resize(&surface, drawable);
+			print_sizes(window, &surface, "resize");
+			acquire_result = skr_surface_next_tex(&surface, drawable, &render_target);
+		}
 
 		if (acquire_result == skr_acquire_success && render_target) {
 			// Upload ImGui mesh data (must be outside render pass)
@@ -360,14 +406,9 @@ int32_t main(int argc, char** argv) {
 			// Progress indicator
 			frame++;
 		} else {
-			// Failed to acquire swapchain image
+			// Failed to acquire swapchain image (minimized, or an error)
 			skr_renderer_frame_end(NULL, 0);
-
-			if (acquire_result == skr_acquire_needs_resize) {
-				skr_surface_resize(&surface);
-			} else if (acquire_result != skr_acquire_success) {
-				ska_time_sleep(16);
-			}
+			ska_time_sleep(16);
 		}
 	}
 
