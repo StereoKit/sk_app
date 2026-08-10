@@ -220,7 +220,7 @@ elseif(UNIX)
 	# instead of a compile error mid-build.
 	find_package(X11)
 	set(SKA_LINUX_X11_FOUND FALSE)
-	if(X11_FOUND AND X11_Xrandr_FOUND AND X11_Xcursor_FOUND AND X11_Xi_FOUND)
+	if(X11_FOUND AND X11_Xrandr_FOUND AND X11_Xcursor_FOUND AND X11_Xi_FOUND AND X11_Xext_FOUND)
 		set(SKA_LINUX_X11_FOUND TRUE)
 		target_compile_definitions(sk_app PRIVATE SKA_LINUX_X11)
 		target_sources(sk_app PRIVATE

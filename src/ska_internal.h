@@ -57,6 +57,7 @@ char* ska_strdup(const char* str);
 	#include <X11/Xutil.h>
 	#include <X11/Xatom.h>
 	#include <X11/extensions/Xrandr.h>
+	#include <X11/extensions/sync.h>
 	#include <X11/cursorfont.h>
 	#include <X11/Xcursor/Xcursor.h>
 #endif
@@ -309,6 +310,10 @@ struct ska_window_t {
 	#ifdef SKA_LINUX_X11
 	Window xwindow;
 	XIC    xic;
+	XSyncCounter x_sync_counter; // _NET_WM_SYNC_REQUEST resize handshake, 0 without XSync
+	XSyncValue   x_sync_value;   // Value the current configure gets acked with
+	bool         x_sync_pending; // Sync request seen, awaiting its ConfigureNotify
+	bool         x_sync_ack;     // Configure handled, counter update due next pump
 	#endif
 	struct ska_wl_window_t* wl; // Wayland backend state, see ska_wayland.c
 #endif
@@ -479,6 +484,8 @@ typedef struct ska_state_t {
 	Atom net_wm_state_fullscreen;
 	Atom net_wm_state_maximized_vert;
 	Atom net_wm_state_maximized_horz;
+	Atom net_wm_sync_request;
+	Atom net_wm_sync_request_counter;
 	Atom resource_manager; // For DPI change detection
 	XIM xim;
 	float cached_dpi_scale; // Track DPI changes

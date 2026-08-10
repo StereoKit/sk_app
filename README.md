@@ -28,7 +28,7 @@ icon, install a `.desktop` file and set `ska_settings_t.app_id` to match its
 ```sh
 # Dependencies
 sudo apt-get install cmake libx11-dev libxrandr-dev libxcursor-dev libxi-dev \
-                     libwayland-dev libxkbcommon-dev libdecor-0-dev
+                     libxext-dev libwayland-dev libxkbcommon-dev libdecor-0-dev
 
 # To configure
 cmake -B build

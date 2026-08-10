@@ -946,7 +946,8 @@ void ska_platform_show_cursor(bool show) {
 	ShowCursor(show ? TRUE : FALSE);
 }
 
-static bool g_win32_relative;
+static bool  g_win32_relative;
+static POINT g_win32_rel_restore; // Cursor position at relative mode entry, put back on exit
 
 static ska_window_t* ska_win32_focused_window(void) {
 	for (uint32_t i = 0; i < SKA_MAX_WINDOWS; i++) {
@@ -974,6 +975,8 @@ bool ska_platform_set_relative_mouse_mode(bool enabled) {
 	}
 
 	if (enabled) {
+		GetCursorPos(&g_win32_rel_restore);
+
 		// Raw input keeps arriving past the edges, but a cursor that wanders off
 		// the window would still take clicks elsewhere.
 		ska_window_t* window = ska_win32_focused_window();
@@ -989,6 +992,9 @@ bool ska_platform_set_relative_mouse_mode(bool enabled) {
 		ShowCursor(FALSE);
 	} else {
 		ClipCursor(NULL);
+		// The hidden cursor drifted through the clip rect the whole time it was
+		// hidden; exit where relative mode began, like every other backend.
+		SetCursorPos(g_win32_rel_restore.x, g_win32_rel_restore.y);
 		ShowCursor(TRUE);
 	}
 	g_win32_relative = enabled;

@@ -1,9 +1,9 @@
 //
 // sk_app - X11 symbols resolved at runtime
 //
-// Expanded several times with different definitions of the SKA_X11_SYM,
-// SKA_XRANDR_SYM, and SKA_XCURSOR_SYM macros, so each symbol is written
-// once and the pointer, its type, and the dlsym call cannot drift apart.
+// Expanded several times with different definitions of the per-library
+// SKA_*_SYM macros, so each symbol is written once and the pointer, its
+// type, and the dlsym call cannot drift apart.
 // Deliberately has no include guard.
 
 SKA_X11_SYM(XAllocClassHint)
@@ -43,6 +43,7 @@ SKA_X11_SYM(XNextEvent)
 SKA_X11_SYM(XOpenDisplay)
 SKA_X11_SYM(XOpenIM)
 SKA_X11_SYM(XPending)
+SKA_X11_SYM(XQueryPointer)
 SKA_X11_SYM(XRaiseWindow)
 SKA_X11_SYM(XResizeWindow)
 SKA_X11_SYM(XResourceManagerString)
@@ -68,6 +69,7 @@ SKA_X11_SYM(XSync)
 SKA_X11_SYM(XTranslateCoordinates)
 SKA_X11_SYM(XUnmapWindow)
 SKA_X11_SYM(XUnsetICFocus)
+SKA_X11_SYM(XWarpPointer)
 SKA_X11_SYM(Xutf8LookupString)
 
 // XInput2 raw motion, the only unaccelerated pointer source X11 offers
@@ -78,3 +80,10 @@ SKA_X11_SYM(XGrabPointer)
 SKA_X11_SYM(XUngrabPointer)
 SKA_XI2_SYM(XIQueryVersion)
 SKA_XI2_SYM(XISelectEvents)
+
+// XSync counters, for the _NET_WM_SYNC_REQUEST resize handshake
+SKA_XEXT_SYM(XSyncQueryExtension)
+SKA_XEXT_SYM(XSyncInitialize)
+SKA_XEXT_SYM(XSyncCreateCounter)
+SKA_XEXT_SYM(XSyncSetCounter)
+SKA_XEXT_SYM(XSyncDestroyCounter)

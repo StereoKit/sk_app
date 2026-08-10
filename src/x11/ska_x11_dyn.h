@@ -20,22 +20,27 @@
 #include <X11/Xcursor/Xcursor.h>
 #include <X11/extensions/Xrandr.h>
 #include <X11/extensions/XInput2.h>
+#include <X11/extensions/sync.h>
 
 #define SKA_X11_SYM(name)     extern __typeof__(name)* ska_dyn_##name;
 #define SKA_XRANDR_SYM(name)  extern __typeof__(name)* ska_dyn_##name;
 #define SKA_XCURSOR_SYM(name) extern __typeof__(name)* ska_dyn_##name;
 #define SKA_XI2_SYM(name)     extern __typeof__(name)* ska_dyn_##name;
+#define SKA_XEXT_SYM(name)    extern __typeof__(name)* ska_dyn_##name;
 #include "ska_x11_syms.h"
 #undef SKA_X11_SYM
 #undef SKA_XRANDR_SYM
 #undef SKA_XCURSOR_SYM
 #undef SKA_XI2_SYM
+#undef SKA_XEXT_SYM
 
 // Loads libX11, libXrandr, and libXcursor. Returns false when any is missing,
-// which lets backend selection fall through to another backend. libXi is
-// optional and only costs relative mouse mode when it is absent.
+// which lets backend selection fall through to another backend. libXi and
+// libXext are optional: a miss only costs relative mouse mode or the resize
+// frame-sync handshake.
 bool ska_x11_dyn_load(void);
 bool ska_x11_dyn_has_xi2(void);
+bool ska_x11_dyn_has_xext(void);
 void ska_x11_dyn_unload(void);
 
 #define XQueryExtension              ska_dyn_XQueryExtension
@@ -82,6 +87,7 @@ void ska_x11_dyn_unload(void);
 #define XOpenDisplay                 ska_dyn_XOpenDisplay
 #define XOpenIM                      ska_dyn_XOpenIM
 #define XPending                     ska_dyn_XPending
+#define XQueryPointer                ska_dyn_XQueryPointer
 #define XRaiseWindow                 ska_dyn_XRaiseWindow
 #define XResizeWindow                ska_dyn_XResizeWindow
 #define XResourceManagerString       ska_dyn_XResourceManagerString
@@ -93,6 +99,11 @@ void ska_x11_dyn_unload(void);
 #define XRRFreeScreenConfigInfo      ska_dyn_XRRFreeScreenConfigInfo
 #define XRRGetScreenInfo             ska_dyn_XRRGetScreenInfo
 #define XSelectInput                 ska_dyn_XSelectInput
+#define XSyncQueryExtension          ska_dyn_XSyncQueryExtension
+#define XSyncInitialize              ska_dyn_XSyncInitialize
+#define XSyncCreateCounter           ska_dyn_XSyncCreateCounter
+#define XSyncSetCounter              ska_dyn_XSyncSetCounter
+#define XSyncDestroyCounter          ska_dyn_XSyncDestroyCounter
 #define XSendEvent                   ska_dyn_XSendEvent
 #define XSetClassHint                ska_dyn_XSetClassHint
 #define XSetICFocus                  ska_dyn_XSetICFocus
@@ -107,6 +118,7 @@ void ska_x11_dyn_unload(void);
 #define XTranslateCoordinates        ska_dyn_XTranslateCoordinates
 #define XUnmapWindow                 ska_dyn_XUnmapWindow
 #define XUnsetICFocus                ska_dyn_XUnsetICFocus
+#define XWarpPointer                 ska_dyn_XWarpPointer
 #define Xutf8LookupString            ska_dyn_Xutf8LookupString
 
 #endif // SKA_LINUX_X11

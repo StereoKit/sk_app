@@ -29,9 +29,12 @@ static Cursor             g_x_cursors[ska_system_cursor_count_];
 static Cursor             g_x_invisible_cursor;
 static ska_system_cursor_ g_current_cursor = ska_system_cursor_arrow;
 static bool               g_x_relative;
+static bool               g_x_sync_ok;
 static int32_t            g_x_xi2_opcode = -1;
 static double             g_x_rel_carry_x;
 static double             g_x_rel_carry_y;
+static int32_t            g_x_rel_restore_x; // Root-relative cursor position saved
+static int32_t            g_x_rel_restore_y; // at relative mode entry, put back on exit
 
 static ska_window_t* ska_find_window_by_xwindow(Window xwin) {
 	for (uint32_t i = 0; i < SKA_MAX_WINDOWS; i++) {
@@ -104,7 +107,17 @@ static bool ska_linux_ensure_x_display(void) {
 	g_ska.net_wm_state_fullscreen     = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False);
 	g_ska.net_wm_state_maximized_vert = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
 	g_ska.net_wm_state_maximized_horz = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+	g_ska.net_wm_sync_request         = XInternAtom(display, "_NET_WM_SYNC_REQUEST", False);
+	g_ska.net_wm_sync_request_counter = XInternAtom(display, "_NET_WM_SYNC_REQUEST_COUNTER", False);
 	g_ska.resource_manager            = XInternAtom(display, "RESOURCE_MANAGER", False);
+
+	// _NET_WM_SYNC_REQUEST support matters beyond smoothness: mutter-family
+	// WMs throttle interactive resizes of non-sync clients to pointer pauses,
+	// which reads as the window freezing mid-drag.
+	int32_t sync_event = 0, sync_error = 0, sync_major = 0, sync_minor = 0;
+	g_x_sync_ok = ska_x11_dyn_has_xext() &&
+	              XSyncQueryExtension(display, &sync_event, &sync_error) &&
+	              XSyncInitialize    (display, &sync_major, &sync_minor);
 
 	// Watch root for RESOURCE_MANAGER property changes (xrdb-driven DPI changes).
 	XSelectInput(display, g_ska.x_root, PropertyChangeMask);
@@ -131,6 +144,7 @@ void ska_x11_shutdown(void) {
 	g_x_invisible_cursor = None;
 	g_current_cursor     = ska_system_cursor_arrow;
 	g_x_relative         = false;
+	g_x_sync_ok          = false;
 	g_x_xi2_opcode       = -1;
 
 	ska_x11_dyn_unload();
@@ -216,8 +230,18 @@ bool ska_x11_window_create(
 		XFree(class_hint);
 	}
 
-	// Set WM protocols
-	XSetWMProtocols(g_ska.x_display, window->xwindow, &g_ska.wm_delete_window, 1);
+	// Set WM protocols. The sync counter lets the WM pace interactive resizes
+	// against our frames; ska_x11_pump_events acks it.
+	Atom    protocols[2]    = { g_ska.wm_delete_window };
+	int32_t protocol_count  = 1;
+	if (g_x_sync_ok) {
+		protocols[protocol_count++] = g_ska.net_wm_sync_request;
+		window->x_sync_counter = XSyncCreateCounter(g_ska.x_display, (XSyncValue){0});
+		XChangeProperty(g_ska.x_display, window->xwindow, g_ska.net_wm_sync_request_counter,
+		                XA_CARDINAL, 32, PropModeReplace,
+		                (unsigned char*)&window->x_sync_counter, 1);
+	}
+	XSetWMProtocols(g_ska.x_display, window->xwindow, protocols, protocol_count);
 
 	// Create input context
 	if (g_ska.xim) {
@@ -300,6 +324,11 @@ bool ska_x11_window_create(
 void ska_x11_window_destroy(ska_window_t* ref_window) {
 	if (ref_window->xic) {
 		XDestroyIC(ref_window->xic);
+	}
+
+	if (ref_window->x_sync_counter) {
+		XSyncDestroyCounter(g_ska.x_display, ref_window->x_sync_counter);
+		ref_window->x_sync_counter = 0;
 	}
 
 	if (ref_window->xwindow) {
@@ -673,6 +702,10 @@ bool ska_x11_set_relative_mouse_mode(bool enabled) {
 	if (!enabled) {
 		ska_x11_xi2_select(false);
 		XUngrabPointer(g_ska.x_display, CurrentTime);
+		// The hidden cursor drifted through the whole grab; putting it back
+		// where relative mode began matches the locked pointer on Wayland.
+		XWarpPointer(g_ska.x_display, None, g_ska.x_root, 0, 0, 0, 0,
+			g_x_rel_restore_x, g_x_rel_restore_y);
 		g_x_relative = false;
 		// Back to the app's own choice, which entering relative mode overrode
 		ska_x11_show_cursor(g_ska.input_state.cursor_visible);
@@ -698,6 +731,12 @@ bool ska_x11_set_relative_mouse_mode(bool enabled) {
 		ska_set_error("ska_mouse_set_relative_mode: pointer grab failed (%d)", grab);
 		return false;
 	}
+
+	Window   root_ret, child_ret;
+	int32_t  win_x = 0, win_y = 0;
+	uint32_t mask_ret = 0;
+	XQueryPointer(g_ska.x_display, xwin, &root_ret, &child_ret,
+		&g_x_rel_restore_x, &g_x_rel_restore_y, &win_x, &win_y, &mask_ret);
 
 	ska_x11_xi2_select(true);
 	ska_x11_show_cursor(false);
@@ -770,6 +809,18 @@ void ska_x11_pump_events(void) {
 	if (!g_ska.x_display) {
 		ska_linux_check_file_dialog();
 		return;
+	}
+
+	// Ack resize sync a pump after the configure landed: the app has presented
+	// a frame at the new size in between, which is exactly what the counter
+	// promises the WM. The WM then releases the next configure, pacing an
+	// interactive resize to the frame rate.
+	for (uint32_t i = 0; i < SKA_MAX_WINDOWS; i++) {
+		ska_window_t* win = g_ska.windows[i];
+		if (win && win->x_sync_ack) {
+			win->x_sync_ack = false;
+			XSyncSetCounter(g_ska.x_display, win->x_sync_counter, win->x_sync_value);
+		}
 	}
 
 	while (XPending(g_ska.x_display)) {
@@ -1037,6 +1088,13 @@ void ska_x11_pump_events(void) {
 			break;
 
 		case ConfigureNotify:
+			// This configure is the one the WM's last sync request paired
+			// with; queue the counter ack for after the frame that draws it.
+			if (window->x_sync_pending) {
+				window->x_sync_pending = false;
+				window->x_sync_ack     = true;
+			}
+
 			// ConfigureNotify carries pixels; the content size and the
 			// event payload are both screen coordinates.
 			if (xev.xconfigure.width  != window->drawable_width ||
@@ -1101,6 +1159,14 @@ void ska_x11_pump_events(void) {
 				event.window.window_id = window->id;
 				window->should_close = true;
 				ska_post_event(&event);
+			} else if (xev.xclient.message_type == g_ska.wm_protocols &&
+				(Atom)xev.xclient.data.l[0] == g_ska.net_wm_sync_request) {
+				// The WM sends this right before a resize ConfigureNotify and
+				// then waits on the counter, so the value is held until that
+				// configure arrives and its frame has drawn.
+				window->x_sync_value.lo = (uint32_t)xev.xclient.data.l[2];
+				window->x_sync_value.hi = (int32_t) xev.xclient.data.l[3];
+				window->x_sync_pending  = true;
 			}
 			break;
 
