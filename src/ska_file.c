@@ -454,6 +454,7 @@ SKA_API bool ska_get_cwd(char* ref_buffer, size_t buffer_size) {
 	return true;
 }
 
+#ifndef SKA_PLATFORM_ANDROID
 // Helper: Get directory portion of a path (modifies buffer in-place)
 static void ska_path_get_directory(char* path) {
 	if (!path || path[0] == '\0') return;
@@ -474,6 +475,7 @@ static void ska_path_get_directory(char* path) {
 		path[1] = '\0';
 	}
 }
+#endif // !SKA_PLATFORM_ANDROID
 
 SKA_API bool ska_get_exe_path(char* ref_buffer, size_t buffer_size) {
 	if (!ref_buffer || buffer_size == 0) {
