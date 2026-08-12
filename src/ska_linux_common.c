@@ -134,6 +134,20 @@ PFN_vkGetInstanceProcAddr ska_linux_vk_get_proc_addr(void) {
 	return cached;
 }
 
+// ========== Optional Component Summary ==========
+
+void ska_linux_log_optional(const char* backend, const ska_linux_optional_t* items, uint32_t count) {
+	uint32_t missing = 0;
+	for (uint32_t i = 0; i < count; i++) {
+		if (items[i].present) continue;
+		if (missing == 0) {
+			ska_log(ska_log_info, "%s: optional components not present, everything else still works:", backend);
+		}
+		missing++;
+		ska_log(ska_log_info, "  no %s, so %s", items[i].name, items[i].effect);
+	}
+}
+
 // ========== Text Input Platform Functions ==========
 
 void ska_platform_show_virtual_keyboard(bool visible, ska_text_input_type_ type) {

@@ -34,13 +34,16 @@
 #undef SKA_XI2_SYM
 #undef SKA_XEXT_SYM
 
-// Loads libX11, libXrandr, and libXcursor. Returns false when any is missing,
-// which lets backend selection fall through to another backend. libXi and
-// libXext are optional: a miss only costs relative mouse mode or the resize
-// frame-sync handshake.
+// Loads libX11, which is the only one the backend cannot run without: a miss
+// there returns false and lets backend selection fall through. The rest are
+// optional, and each costs one feature. libXi is relative mouse mode, libXext
+// the resize frame-sync handshake, libXcursor themed cursors, libXrandr the
+// refresh rate.
 bool ska_x11_dyn_load(void);
 bool ska_x11_dyn_has_xi2(void);
 bool ska_x11_dyn_has_xext(void);
+bool ska_x11_dyn_has_xcursor(void);
+bool ska_x11_dyn_has_xrandr(void);
 void ska_x11_dyn_unload(void);
 
 #define XQueryExtension              ska_dyn_XQueryExtension

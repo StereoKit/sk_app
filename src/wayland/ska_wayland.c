@@ -1026,6 +1026,24 @@ static const struct wl_registry_listener k_registry_listener = {
 // Init and Shutdown
 // ============================================================================
 
+// What the compositor and the loaded libraries do not offer. Read after the
+// registry, xkb, decorations, and the cursor fallback have all settled, so
+// each entry reflects the state the app will actually run with.
+static void ska_wl_log_optional(void) {
+	ska_wl_state_t* wl = ska_wl();
+
+	const ska_linux_optional_t items[] = {
+		{ "xdg-decoration or libdecor",             wl->decoration_manager || wl->decor,                       "windows have no title bar or border" },
+		{ "cursor-shape-v1 or a cursor theme",      wl->cursor_shape_manager || wl->cursor_theme,              "the cursor stays whatever the compositor draws" },
+		{ "fractional-scale-v1 and viewporter",     wl->fractional_scale_manager && wl->viewporter,            "display scaling rounds to whole steps" },
+		{ "pointer-constraints and relative-pointer", wl->pointer_constraints && wl->relative_pointer_manager, "relative mouse mode is unavailable" },
+		{ "wl_data_device_manager",                 wl->data_device_manager != NULL,                           "the clipboard is unavailable" },
+		{ "compose table for this locale",          wl->compose_state != NULL,                                 "dead keys do not combine into accented characters" },
+	};
+
+	ska_linux_log_optional("Wayland", items, sizeof(items) / sizeof(items[0]));
+}
+
 bool ska_wl_init(void) {
 	if (!ska_wl_dyn_load()) {
 		return false;
@@ -1075,13 +1093,11 @@ bool ska_wl_init(void) {
 		if (!locale || !*locale) locale = getenv("LANG");
 		if (!locale || !*locale) locale = "C";
 
+		// Missing compose data only costs dead keys, which the optional
+		// summary reports rather than warning about
 		wl->compose_table = xkb_compose_table_new_from_locale(wl->xkb_context, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
 		if (wl->compose_table) {
 			wl->compose_state = xkb_compose_state_new(wl->compose_table, XKB_COMPOSE_STATE_NO_FLAGS);
-		}
-		// Missing compose data only costs dead keys, so this is not fatal
-		if (!wl->compose_state) {
-			ska_log(ska_log_warn, "Wayland: no compose table for locale '%s', dead keys are unavailable", locale);
 		}
 	}
 
@@ -1100,11 +1116,10 @@ bool ska_wl_init(void) {
 		wl->cursor_theme = wl_cursor_theme_load(theme_name, size, wl->shm);
 		if (wl->cursor_theme) {
 			wl->cursor_surface = wl_compositor_create_surface(wl->compositor);
-		} else {
-			ska_log(ska_log_warn, "Wayland: no cursor-shape-v1 and no cursor theme, the compositor default cursor stays in use");
 		}
 	}
 
+	ska_wl_log_optional();
 	return true;
 }
 

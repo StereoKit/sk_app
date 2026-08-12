@@ -62,6 +62,21 @@ bool ska_x11_init(void) {
 	return true;
 }
 
+// What the loaded libraries and the running server do not offer. Reported from
+// the display open rather than backend init, because XIM and the sync extension
+// are only knowable once there is a connection to ask.
+static void ska_x11_log_optional(void) {
+	const ska_linux_optional_t items[] = {
+		{ "libXcursor",     ska_x11_dyn_has_xcursor(), "cursors come from the X core font instead of the desktop theme" },
+		{ "libXrandr",      ska_x11_dyn_has_xrandr(),  "the display refresh rate reads as 0" },
+		{ "libXi",          ska_x11_dyn_has_xi2(),     "relative mouse mode is unavailable" },
+		{ "libXext",        g_x_sync_ok,               "resizing can stutter under mutter-family window managers" },
+		{ "X input method", g_ska.xim != NULL,         "text input is limited to plain keys, with no compose or IME" },
+	};
+
+	ska_linux_log_optional("X11", items, sizeof(items) / sizeof(items[0]));
+}
+
 // Lazily opens the X11 display and per-display state (atoms, XIM, Xrm).
 // Idempotent on success: once g_ska.x_display is set, returns true without
 // side effects. Failures are not memoized, so each call with no X server
@@ -93,10 +108,9 @@ static bool ska_linux_ensure_x_display(void) {
 	Bool xkb_detectable_supported = False;
 	XkbSetDetectableAutoRepeat(display, True, &xkb_detectable_supported);
 
+	// A miss only costs compose and IME input, which the optional summary
+	// below reports rather than warning about
 	g_ska.xim = XOpenIM(display, NULL, NULL, NULL);
-	if (!g_ska.xim) {
-		ska_log(ska_log_warn, "Failed to open X Input Method");
-	}
 
 	// Required before any XrmGetResource call (DPI queries).
 	XrmInitialize();
@@ -122,6 +136,7 @@ static bool ska_linux_ensure_x_display(void) {
 	// Watch root for RESOURCE_MANAGER property changes (xrdb-driven DPI changes).
 	XSelectInput(display, g_ska.x_root, PropertyChangeMask);
 
+	ska_x11_log_optional();
 	return true;
 }
 
@@ -564,8 +579,10 @@ float ska_x11_get_dpi_scale(const ska_window_t* window) {
 float ska_x11_get_refresh_rate(const ska_window_t* window) {
 	(void)window;
 
-	// Callable before any window exists, and the display is opened lazily
-	if (!g_ska.x_display) return 0.0f;
+	// Callable before any window exists, and the display is opened lazily.
+	// Without libXrandr there is no other source for the rate, so 0 stands for
+	// unknown, which is what the public header documents.
+	if (!g_ska.x_display || !ska_x11_dyn_has_xrandr()) return 0.0f;
 
 	// Use XRandR to get the current screen refresh rate
 	XRRScreenConfiguration* config = XRRGetScreenInfo(g_ska.x_display, g_ska.x_root);
@@ -626,7 +643,9 @@ void ska_x11_set_cursor(ska_system_cursor_ cursor) {
 
 	if (g_x_cursors[cursor] == None) {
 		// Try themed cursor first
-		g_x_cursors[cursor] = XcursorLibraryLoadCursor(g_ska.x_display, xcursor_names[cursor]);
+		if (ska_x11_dyn_has_xcursor()) {
+			g_x_cursors[cursor] = XcursorLibraryLoadCursor(g_ska.x_display, xcursor_names[cursor]);
+		}
 
 		// Fall back to X11 cursor font
 		if (g_x_cursors[cursor] == None) {

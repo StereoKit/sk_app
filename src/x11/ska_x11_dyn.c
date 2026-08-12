@@ -62,35 +62,39 @@ void ska_x11_dyn_unload(void) {
 bool ska_x11_dyn_load(void) {
 	if (g_x11_lib) return true;
 
+	// Only libX11 gates the backend. The rest each cost one feature, so a miss
+	// leaves that feature off rather than dropping X11 entirely.
 	g_x11_lib     = dlopen("libX11.so.6",     RTLD_LAZY | RTLD_LOCAL);
 	g_xrandr_lib  = dlopen("libXrandr.so.2",  RTLD_LAZY | RTLD_LOCAL);
 	g_xcursor_lib = dlopen("libXcursor.so.1", RTLD_LAZY | RTLD_LOCAL);
-	// These two are optional: libXi is relative mouse mode only, libXext is
-	// the resize frame-sync handshake only
 	g_xi2_lib     = dlopen("libXi.so.6",      RTLD_LAZY | RTLD_LOCAL);
 	g_xext_lib    = dlopen("libXext.so.6",    RTLD_LAZY | RTLD_LOCAL);
-	if (!g_x11_lib || !g_xrandr_lib || !g_xcursor_lib) {
+	if (!g_x11_lib) {
 		ska_x11_dyn_unload();
 		return false;
 	}
 
-	bool ok      = true;
-	bool xi2_ok  = true;
-	bool xext_ok = true;
+	bool ok         = true;
+	bool xi2_ok     = true;
+	bool xext_ok    = true;
+	bool xcursor_ok = true;
+	bool xrandr_ok  = true;
 	#define SKA_X11_SYM(name)     ok = ska_x11_dyn_sym(g_x11_lib,     #name, &ska_dyn_##name) && ok;
-	#define SKA_XRANDR_SYM(name)  ok = ska_x11_dyn_sym(g_xrandr_lib,  #name, &ska_dyn_##name) && ok;
-	#define SKA_XCURSOR_SYM(name) ok = ska_x11_dyn_sym(g_xcursor_lib, #name, &ska_dyn_##name) && ok;
 	// The optional libraries' symbols do not gate the backend
-	#define SKA_XI2_SYM(name)     xi2_ok  = g_xi2_lib  && ska_x11_dyn_sym(g_xi2_lib,  #name, &ska_dyn_##name) && xi2_ok;
-	#define SKA_XEXT_SYM(name)    xext_ok = g_xext_lib && ska_x11_dyn_sym(g_xext_lib, #name, &ska_dyn_##name) && xext_ok;
+	#define SKA_XRANDR_SYM(name)  xrandr_ok  = g_xrandr_lib  && ska_x11_dyn_sym(g_xrandr_lib,  #name, &ska_dyn_##name) && xrandr_ok;
+	#define SKA_XCURSOR_SYM(name) xcursor_ok = g_xcursor_lib && ska_x11_dyn_sym(g_xcursor_lib, #name, &ska_dyn_##name) && xcursor_ok;
+	#define SKA_XI2_SYM(name)     xi2_ok     = g_xi2_lib     && ska_x11_dyn_sym(g_xi2_lib,     #name, &ska_dyn_##name) && xi2_ok;
+	#define SKA_XEXT_SYM(name)    xext_ok    = g_xext_lib    && ska_x11_dyn_sym(g_xext_lib,    #name, &ska_dyn_##name) && xext_ok;
 	#include "ska_x11_syms.h"
 	#undef SKA_X11_SYM
 	#undef SKA_XRANDR_SYM
 	#undef SKA_XCURSOR_SYM
 	#undef SKA_XI2_SYM
 	#undef SKA_XEXT_SYM
-	if (!xi2_ok  && g_xi2_lib)  { dlclose(g_xi2_lib);  g_xi2_lib  = NULL; }
-	if (!xext_ok && g_xext_lib) { dlclose(g_xext_lib); g_xext_lib = NULL; }
+	if (!xi2_ok     && g_xi2_lib)     { dlclose(g_xi2_lib);     g_xi2_lib     = NULL; }
+	if (!xext_ok    && g_xext_lib)    { dlclose(g_xext_lib);    g_xext_lib    = NULL; }
+	if (!xcursor_ok && g_xcursor_lib) { dlclose(g_xcursor_lib); g_xcursor_lib = NULL; }
+	if (!xrandr_ok  && g_xrandr_lib)  { dlclose(g_xrandr_lib);  g_xrandr_lib  = NULL; }
 
 	if (!ok) {
 		ska_x11_dyn_unload();
@@ -105,6 +109,14 @@ bool ska_x11_dyn_has_xi2(void) {
 
 bool ska_x11_dyn_has_xext(void) {
 	return g_xext_lib != NULL;
+}
+
+bool ska_x11_dyn_has_xcursor(void) {
+	return g_xcursor_lib != NULL;
+}
+
+bool ska_x11_dyn_has_xrandr(void) {
+	return g_xrandr_lib != NULL;
 }
 
 #endif // SKA_PLATFORM_LINUX && SKA_LINUX_X11

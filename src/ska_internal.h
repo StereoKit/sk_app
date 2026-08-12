@@ -399,6 +399,18 @@ ska_scancode_ ska_linux_keysym_to_scancode(uint32_t keysym);
 // no loader is installed.
 PFN_vkGetInstanceProcAddr ska_linux_vk_get_proc_addr(void);
 
+// One optional piece of a backend, for the summary each one logs at init.
+typedef struct ska_linux_optional_t {
+	const char* name;   // The library or protocol that is absent
+	bool        present;
+	const char* effect; // What the app loses without it, in the user's terms
+} ska_linux_optional_t;
+
+// Logs the absent entries as info, one line each, and nothing at all when the
+// backend has everything. Missing pieces are expected rather than wrong, so
+// these are not warnings.
+void ska_linux_log_optional(const char* backend, const ska_linux_optional_t* items, uint32_t count);
+
 #ifdef SKA_LINUX_WAYLAND
 // Native handle accessors, reached from the public API in ska_common.c rather
 // than through the vtable, since they have no X11-side counterpart to dispatch.
