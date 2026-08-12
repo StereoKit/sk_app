@@ -8,6 +8,7 @@
 
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>  /* For key codes */
+#import <IOKit/hidsystem/IOLLEvent.h>  /* For NX_DEVICE* modifier masks */
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 /* Forward declaration for file dialog check */
@@ -117,7 +118,7 @@ static void ska_init_scancode_table(void) {
 	ska_macos_scancode_table[kVK_RightControl] = ska_scancode_rctrl;
 	ska_macos_scancode_table[kVK_RightShift] = ska_scancode_rshift;
 	ska_macos_scancode_table[kVK_RightOption] = ska_scancode_ralt;
-	/* Note: macOS doesn't distinguish right Command in Carbon */
+	ska_macos_scancode_table[kVK_RightCommand] = ska_scancode_rgui;
 }
 
 static ska_window_t* ska_find_window_by_nswindow(NSWindow* nswindow) {
@@ -290,6 +291,21 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 	ska_post_event(&event);
 }
 
+/* is_fullscreen is the live platform-reported state, so it flips on the
+   transition notifications rather than on request. These also catch
+   fullscreen changes made from outside the app, like the green traffic
+   light button. windowDidResize fires during the transition, so the
+   ska_event_window_resized the API promises needs no extra handling. */
+- (void)windowDidEnterFullScreen:(NSNotification*)notification {
+	if (!self.window) return;
+	self.window->is_fullscreen = true;
+}
+
+- (void)windowDidExitFullScreen:(NSNotification*)notification {
+	if (!self.window) return;
+	self.window->is_fullscreen = false;
+}
+
 @end
 
 /* Application delegate for app lifecycle */
@@ -401,6 +417,10 @@ bool ska_platform_window_create(
 		[nswindow setAcceptsMouseMovedEvents:YES];
 		[nswindow setReleasedWhenClosed:NO];
 
+		/* Without FullScreenPrimary, toggleFullScreen: is silently ignored
+		   and the green traffic light only zooms. */
+		[nswindow setCollectionBehavior:[nswindow collectionBehavior] | NSWindowCollectionBehaviorFullScreenPrimary];
+
 		if (x == -1 || y == -1) {
 			[nswindow center];
 		}
@@ -429,6 +449,12 @@ bool ska_platform_window_create(
 		if (!(flags & ska_window_hidden)) {
 			[nswindow makeKeyAndOrderFront:nil];
 			window->is_visible = true;
+		}
+
+		/* After ordering front; macOS animates a visible window into its
+		   fullscreen Space, and a hidden window has no Space to move to. */
+		if ((flags & ska_window_fullscreen) && window->is_visible) {
+			[nswindow toggleFullScreen:nil];
 		}
 
 		return true;
@@ -543,10 +569,16 @@ void ska_platform_window_minimize(ska_window_t* window) {
 }
 
 void ska_platform_window_set_fullscreen(ska_window_t* window, bool fullscreen) {
-	// TODO: not yet implemented on macOS ([nswindow toggleFullScreen:nil],
-	// gated on the current state not already matching).
-	(void)window;
-	(void)fullscreen;
+	@autoreleasepool {
+		NSWindow* nswindow = (NSWindow*)window->ns_window;
+		/* Gate on the live style mask, not is_fullscreen: mid-transition the
+		   mask has already flipped while the notification hasn't fired yet,
+		   and toggling again would cancel the transition in progress. */
+		bool is_fullscreen = ([nswindow styleMask] & NSWindowStyleMaskFullScreen) != 0;
+		if (is_fullscreen != fullscreen) {
+			[nswindow toggleFullScreen:nil];
+		}
+	}
 }
 
 void ska_platform_window_restore(ska_window_t* window) {
@@ -704,6 +736,58 @@ void ska_platform_pump_events(void) {
 			event.timestamp = (uint32_t)ska_time_get_elapsed_ms();
 
 			switch (nsevent.type) {
+				case NSEventTypeFlagsChanged: {
+					/* Modifier keys never arrive as KeyDown/KeyUp on macOS,
+					   only as FlagsChanged, so key events are synthesized
+					   here. */
+					ska_scancode_ scancode = ska_macos_scancode_table[nsevent.keyCode];
+					if (scancode == ska_scancode_unknown) {
+						break;
+					}
+
+					/* The device-dependent bits are used rather than the
+					   shared NSEventModifierFlag* bits because a shared bit
+					   stays set while either key of a left/right pair is
+					   still held. */
+					NSEventModifierFlags flags = nsevent.modifierFlags;
+					bool pressed = false;
+					switch (nsevent.keyCode) {
+						case kVK_Shift:        pressed = (flags & NX_DEVICELSHIFTKEYMASK) != 0; break;
+						case kVK_RightShift:   pressed = (flags & NX_DEVICERSHIFTKEYMASK) != 0; break;
+						case kVK_Control:      pressed = (flags & NX_DEVICELCTLKEYMASK)   != 0; break;
+						case kVK_RightControl: pressed = (flags & NX_DEVICERCTLKEYMASK)   != 0; break;
+						case kVK_Option:       pressed = (flags & NX_DEVICELALTKEYMASK)   != 0; break;
+						case kVK_RightOption:  pressed = (flags & NX_DEVICERALTKEYMASK)   != 0; break;
+						case kVK_Command:      pressed = (flags & NX_DEVICELCMDKEYMASK)   != 0; break;
+						case kVK_RightCommand: pressed = (flags & NX_DEVICERCMDKEYMASK)   != 0; break;
+						/* Caps lock reports its lock state, not the physical
+						   key, and its release event looks identical to its
+						   press. Treating the lock state as held makes the
+						   key act as a toggle. */
+						case kVK_CapsLock:     pressed = (flags & NSEventModifierFlagCapsLock) != 0; break;
+						default: break;
+					}
+
+					/* No state change; e.g. the second FlagsChanged that caps
+					   lock sends when the physical key is released. */
+					if (pressed == (g_ska.input_state.keyboard[scancode] != 0)) {
+						break;
+					}
+
+					event.type = pressed ? ska_event_key_down : ska_event_key_up;
+					event.keyboard.window_id = window ? window->id : 0;
+					event.keyboard.pressed   = pressed;
+					event.keyboard.repeat    = false;
+					event.keyboard.scancode  = scancode;
+					event.keyboard.modifiers = ska_macos_get_modifiers(flags);
+
+					g_ska.input_state.keyboard[scancode] = pressed ? 1 : 0;
+					g_ska.input_state.key_modifiers = event.keyboard.modifiers;
+
+					ska_post_event(&event);
+					break;
+				}
+
 				case NSEventTypeKeyDown:
 				case NSEventTypeKeyUp: {
 					if (window) {
@@ -725,9 +809,28 @@ void ska_platform_pump_events(void) {
 
 						ska_post_event(&event);
 
-						/* Handle text input */
-						if (pressed && nsevent.characters.length > 0) {
-							const char* utf8 = [nsevent.characters UTF8String];
+						/* Handle text input. Command-modified keys are
+						   shortcuts, not text (Win32 similarly produces no
+						   WM_CHAR for its shortcut modifier). */
+						if (pressed && nsevent.characters.length > 0 &&
+						    !(nsevent.modifierFlags & NSEventModifierFlagCommand)) {
+							NSString* text  = nsevent.characters;
+							unichar   first = [text characterAtIndex:0];
+
+							if (first >= 0xF700 && first <= 0xF8FF) {
+								/* Cocoa reports function keys (arrows,
+								   F-keys, ...) as private-use codepoints;
+								   those are not text. Forward delete is the
+								   only one with a text equivalent: DEL, as
+								   X11 produces. */
+								text = (first == NSDeleteFunctionKey) ? @"\x7f" : nil;
+							} else if (first == 0x7f) {
+								/* Cocoa reports the backspace key as DEL;
+								   Win32 and X11 both send BS. */
+								text = @"\b";
+							}
+
+							const char* utf8 = text ? [text UTF8String] : NULL;
 							if (utf8 && strlen(utf8) > 0) {
 								event.type = ska_event_text_input;
 								event.text.window_id = window->id;
