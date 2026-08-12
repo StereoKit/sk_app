@@ -717,6 +717,12 @@ bool ska_platform_window_create(
 			SWP_NOZORDER | SWP_NOACTIVATE);
 	}
 
+	// Deferred until the window exists, since fullscreen measures the monitor
+	// the window landed on, and restores to the windowed rect set above.
+	if (flags & ska_window_fullscreen) {
+		ska_platform_window_set_fullscreen(window, true);
+	}
+
 	// Get actual window position and size
 	RECT client_rect;
 	GetClientRect(window->hwnd, &client_rect);
@@ -833,11 +839,37 @@ void ska_platform_window_minimize(ska_window_t* window) {
 }
 
 void ska_platform_window_set_fullscreen(ska_window_t* window, bool fullscreen) {
-	// TODO: not yet implemented on Windows. The standard approach is
-	// borderless fullscreen: save the window style + rect, switch to
-	// WS_POPUP sized to MonitorFromWindow's rect, and restore on exit.
-	(void)window;
-	(void)fullscreen;
+	if (fullscreen == window->is_fullscreen) return;
+
+	if (fullscreen) {
+		MONITORINFO monitor;
+		monitor.cbSize = sizeof(monitor);
+		window->saved_placement.length = sizeof(window->saved_placement);
+		if (!GetWindowPlacement(window->hwnd, &window->saved_placement) ||
+		    !GetMonitorInfo(MonitorFromWindow(window->hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
+			return;
+
+		// Borderless fullscreen. The style is saved and restored verbatim
+		// rather than rebuilt, so borderless and non-resizable windows come
+		// back with the frame they were created with.
+		window->saved_style   = (DWORD)GetWindowLongPtrW(window->hwnd, GWL_STYLE);
+		window->is_fullscreen = true;
+		SetWindowLongPtrW(window->hwnd, GWL_STYLE,
+			(LONG_PTR)((window->saved_style & ~(DWORD)WS_OVERLAPPEDWINDOW) | WS_POPUP));
+		// SWP_FRAMECHANGED makes the style edit take effect, and this posts the
+		// WM_SIZE that turns into ska_event_window_resized.
+		SetWindowPos(window->hwnd, HWND_TOP,
+			monitor.rcMonitor.left, monitor.rcMonitor.top,
+			monitor.rcMonitor.right  - monitor.rcMonitor.left,
+			monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+			SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+	} else {
+		window->is_fullscreen = false;
+		SetWindowLongPtrW(window->hwnd, GWL_STYLE, (LONG_PTR)window->saved_style);
+		SetWindowPlacement(window->hwnd, &window->saved_placement);
+		SetWindowPos(window->hwnd, NULL, 0, 0, 0, 0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+	}
 }
 
 void ska_platform_window_restore(ska_window_t* window) {

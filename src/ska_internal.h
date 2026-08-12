@@ -305,6 +305,8 @@ struct ska_window_t {
 	HWND hwnd;
 	HDC hdc;
 	bool tracking_mouse_leave;
+	DWORD           saved_style;     // Window style before fullscreen
+	WINDOWPLACEMENT saved_placement; // Windowed placement before fullscreen
 #endif
 
 #ifdef SKA_PLATFORM_LINUX

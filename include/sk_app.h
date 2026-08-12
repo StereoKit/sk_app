@@ -413,8 +413,9 @@ SKA_API void ska_window_restore(ska_window_t* ref_window);
 // one output allows Wayland compositors to scan it out directly, skipping
 // the composite pass (lower latency, no compositor GPU contention).
 // Equivalent to the ska_window_fullscreen creation flag. On macOS this is
-// the native fullscreen Space, with its animated transition.
-// Not yet implemented on Windows; Android windows are always fullscreen.
+// the native fullscreen Space, with its animated transition. On Windows it
+// is borderless fullscreen, applied immediately rather than requested.
+// Android windows are always fullscreen.
 //
 // @param ref_window Window handle
 // @param fullscreen true to enter fullscreen, false to return to windowed
@@ -424,8 +425,8 @@ SKA_API void ska_window_set_fullscreen(ska_window_t* ref_window, bool fullscreen
 // This tracks reality rather than the last request: it flips once a
 // ska_window_set_fullscreen request is actually granted, and also follows
 // fullscreen changes made from outside the app, like a window manager
-// shortcut. Stays false where set_fullscreen is unimplemented
-// (Windows); always true on Android.
+// shortcut. On Windows the app drives the state itself, so it flips as soon
+// as ska_window_set_fullscreen returns; always true on Android.
 //
 // @param window Window handle
 // @return true if the window currently covers its output
