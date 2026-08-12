@@ -637,7 +637,7 @@ static void ska_wl_keyboard_keymap(void* data, struct wl_keyboard* keyboard, uin
 	(void)data; (void)keyboard;
 	ska_wl_state_t* wl = ska_wl();
 
-	if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+	if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 || !wl->xkb_context) {
 		close(fd);
 		return;
 	}
@@ -1062,8 +1062,8 @@ bool ska_wl_init(void) {
 
 	ska_wl_init_data_device();
 
-	ska_wl_init_decorations();
-
+	// Before anything that dispatches: libdecor roundtrips internally, and the
+	// keymap event for the seat bound above is already queued up.
 	wl->cursor_visible = true;
 	wl->cursor         = ska_system_cursor_arrow;
 	wl->xkb_context    = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
@@ -1084,6 +1084,8 @@ bool ska_wl_init(void) {
 			ska_log(ska_log_warn, "Wayland: no compose table for locale '%s', dead keys are unavailable", locale);
 		}
 	}
+
+	ska_wl_init_decorations();
 
 	// Only needed where the compositor will not draw the cursor itself. Theme
 	// and size follow the usual environment overrides, which is a guess at what

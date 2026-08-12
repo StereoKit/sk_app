@@ -1191,7 +1191,7 @@ void ska_x11_pump_events(void) {
 				event.window.window_id = window->id;
 				window->should_close = true;
 				ska_post_event(&event);
-			} else if (xev.xclient.message_type == g_ska.wm_protocols &&
+			} else if (g_x_sync_ok && xev.xclient.message_type == g_ska.wm_protocols &&
 				(Atom)xev.xclient.data.l[0] == g_ska.net_wm_sync_request) {
 				// The WM sends this right before a resize ConfigureNotify and
 				// then waits on the counter, so the value is held until that
