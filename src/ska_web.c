@@ -342,6 +342,21 @@ static bool ska_web_on_visibility(int event_type, const EmscriptenVisibilityChan
 	return false;
 }
 
+static bool ska_web_on_fullscreenchange(int event_type, const EmscriptenFullscreenChangeEvent* e, void* user_data) {
+	(void)event_type; (void)user_data;
+
+	// Fires on the document, naming the fullscreen element by id. Match that
+	// back to a canvas; an unrelated element fullscreening clears every window.
+	char selector[64];
+	snprintf(selector, sizeof(selector), "#%s", e->id);
+	for (uint32_t i = 0; i < SKA_MAX_WINDOWS; i++) {
+		ska_window_t* window = g_ska.windows[i];
+		if (!window) continue;
+		window->is_fullscreen = e->isFullscreen && strcmp(window->canvas_selector, selector) == 0;
+	}
+	return false;
+}
+
 static bool ska_web_on_pointerlockchange(int event_type, const EmscriptenPointerlockChangeEvent* e, void* user_data) {
 	(void)event_type; (void)user_data;
 
@@ -364,6 +379,7 @@ bool ska_platform_init(void) {
 		emscripten_set_keyup_callback   (EMSCRIPTEN_EVENT_TARGET_WINDOW,   NULL, false, ska_web_on_key);
 		emscripten_set_visibilitychange_callback                          (NULL, false, ska_web_on_visibility);
 		emscripten_set_pointerlockchange_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, NULL, false, ska_web_on_pointerlockchange);
+		emscripten_set_fullscreenchange_callback (EMSCRIPTEN_EVENT_TARGET_DOCUMENT, NULL, false, ska_web_on_fullscreenchange);
 
 		// Heartbeat for blocking-loop detection: this counter only advances
 		// when the browser gets control of the main thread. See

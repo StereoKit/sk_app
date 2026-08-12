@@ -405,8 +405,10 @@ SKA_API void ska_window_minimize(ska_window_t* ref_window);
 SKA_API void ska_window_restore(ska_window_t* ref_window);
 
 // Set or clear fullscreen state on a window.
-// On Linux/X11 this requests _NET_WM_STATE_FULLSCREEN from the window
-// manager; the window resizes to cover its output and a
+// This is a request, not a guarantee: on Linux/X11 it asks the window
+// manager for _NET_WM_STATE_FULLSCREEN, on the web browsers defer it until
+// a user gesture. Watch ska_window_get_fullscreen for the result; when
+// granted, the window resizes to cover its output and a
 // ska_event_window_resized follows. A fullscreen window that exactly covers
 // one output allows Wayland compositors to scan it out directly, skipping
 // the composite pass (lower latency, no compositor GPU contention).
@@ -416,6 +418,17 @@ SKA_API void ska_window_restore(ska_window_t* ref_window);
 // @param ref_window Window handle
 // @param fullscreen true to enter fullscreen, false to return to windowed
 SKA_API void ska_window_set_fullscreen(ska_window_t* ref_window, bool fullscreen);
+
+// Get the window's live fullscreen state, as reported by the platform.
+// This tracks reality rather than the last request: it flips once a
+// ska_window_set_fullscreen request is actually granted, and also follows
+// fullscreen changes made from outside the app, like a window manager
+// shortcut. Stays false where set_fullscreen is unimplemented
+// (Windows/macOS); always true on Android.
+//
+// @param window Window handle
+// @return true if the window currently covers its output
+SKA_API bool ska_window_get_fullscreen(const ska_window_t* window);
 
 // Raise window above other windows.
 // Brings window to front and gives it input focus.

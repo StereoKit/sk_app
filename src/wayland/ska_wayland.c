@@ -131,7 +131,6 @@ typedef struct ska_wl_window_t {
 	int32_t pending_width;   // From xdg_toplevel.configure, 0 means "you choose"
 	int32_t pending_height;
 	bool    maximized;
-	bool    fullscreen;
 	bool    activated;
 } ska_wl_window_t;
 
@@ -506,9 +505,9 @@ static void ska_wl_toplevel_configure(void* data, struct xdg_toplevel* toplevel,
 		}
 	}
 
-	win->maximized  = maximized;
-	win->fullscreen = fullscreen;
-	win->activated  = activated;
+	win->maximized             = maximized;
+	win->activated             = activated;
+	win->owner->is_fullscreen  = fullscreen;
 }
 
 static void ska_wl_toplevel_close(void* data, struct xdg_toplevel* toplevel) {
@@ -1196,8 +1195,8 @@ static void ska_wl_decor_frame_configure(struct libdecor_frame* frame, struct li
 	enum libdecor_window_state state = LIBDECOR_WINDOW_STATE_NONE;
 	if (libdecor_configuration_get_window_state(configuration, &state)) {
 		bool activated = (state & LIBDECOR_WINDOW_STATE_ACTIVE) != 0;
-		win->maximized = (state & LIBDECOR_WINDOW_STATE_MAXIMIZED) != 0;
-		win->fullscreen = (state & LIBDECOR_WINDOW_STATE_FULLSCREEN) != 0;
+		win->maximized           = (state & LIBDECOR_WINDOW_STATE_MAXIMIZED)  != 0;
+		window->is_fullscreen    = (state & LIBDECOR_WINDOW_STATE_FULLSCREEN) != 0;
 		if (activated != win->activated) {
 			win->activated    = activated;
 			window->has_focus = activated;
@@ -1543,11 +1542,11 @@ void ska_wl_window_restore(ska_window_t* ref_window) {
 	ska_wl_window_t* win = ref_window->wl;
 	ref_window->flags &= ~(uint32_t)(ska_window_maximized | ska_window_fullscreen);
 	if (win->decor_frame) {
-		if (win->fullscreen) libdecor_frame_unset_fullscreen(win->decor_frame);
-		if (win->maximized)  libdecor_frame_unset_maximized (win->decor_frame);
+		if (ref_window->is_fullscreen) libdecor_frame_unset_fullscreen(win->decor_frame);
+		if (win->maximized)            libdecor_frame_unset_maximized (win->decor_frame);
 	} else if (win->xdg_toplevel) {
-		if (win->fullscreen) xdg_toplevel_unset_fullscreen(win->xdg_toplevel);
-		if (win->maximized)  xdg_toplevel_unset_maximized (win->xdg_toplevel);
+		if (ref_window->is_fullscreen) xdg_toplevel_unset_fullscreen(win->xdg_toplevel);
+		if (win->maximized)            xdg_toplevel_unset_maximized (win->xdg_toplevel);
 	}
 	wl_display_flush(ska_wl()->display);
 }

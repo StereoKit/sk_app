@@ -489,6 +489,10 @@ SKA_API void ska_window_set_fullscreen(ska_window_t* ref_window, bool fullscreen
 	ska_platform_window_set_fullscreen(ref_window, fullscreen);
 }
 
+SKA_API bool ska_window_get_fullscreen(const ska_window_t* window) {
+	return window ? window->is_fullscreen : false;
+}
+
 SKA_API void ska_window_raise(ska_window_t* ref_window) {
 	if (!ref_window) return;
 	ska_platform_window_raise(ref_window);

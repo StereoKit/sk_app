@@ -1194,7 +1194,8 @@ bool ska_platform_window_create(
 
 	// Window dimensions will be set when we get APP_CMD_INIT_WINDOW
 	window->native_window = NULL;
-	window->is_visible = false;
+	window->is_visible    = false;
+	window->is_fullscreen = true; // Android windows always cover the display
 
 	// Check if a native window was delivered before the stub was created
 	// (e.g. Xamarin surface callback arrived very early).

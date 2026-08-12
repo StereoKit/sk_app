@@ -171,6 +171,7 @@ bool ska_x11_window_create(
 					EnterWindowMask | LeaveWindowMask |
 					FocusChangeMask |
 					StructureNotifyMask |
+					PropertyChangeMask |
 					ExposureMask;
 	wa.colormap = XCreateColormap(g_ska.x_display, g_ska.x_root,
 								   DefaultVisual(g_ska.x_display, g_ska.x_screen),
@@ -427,6 +428,32 @@ void ska_x11_window_maximize(ska_window_t* ref_window) {
 void ska_x11_window_minimize(ska_window_t* ref_window) {
 	XIconifyWindow(g_ska.x_display, ref_window->xwindow, g_ska.x_screen);
 	XFlush(g_ska.x_display);
+}
+
+// The WM owns _NET_WM_STATE, so the property is the live answer to whether a
+// fullscreen request was granted, refused, or undone behind our back.
+static bool ska_x11_read_fullscreen(Window xwindow) {
+	Atom           type      = None;
+	int            format    = 0;
+	unsigned long  count     = 0;
+	unsigned long  remaining = 0;
+	unsigned char* data      = NULL;
+	bool           result    = false;
+
+	if (XGetWindowProperty(g_ska.x_display, xwindow, g_ska.net_wm_state, 0, 32,
+	                       False, XA_ATOM, &type, &format, &count, &remaining,
+	                       &data) != Success || data == NULL)
+		return false;
+
+	Atom* atoms = (Atom*)data;
+	for (unsigned long i = 0; i < count; i++) {
+		if (atoms[i] == g_ska.net_wm_state_fullscreen) {
+			result = true;
+			break;
+		}
+	}
+	XFree(data);
+	return result;
 }
 
 void ska_x11_window_set_fullscreen(ska_window_t* ref_window, bool fullscreen) {
@@ -1132,6 +1159,11 @@ void ska_x11_pump_events(void) {
 					ska_post_event(&event);
 				}
 			}
+			break;
+
+		case PropertyNotify:
+			if (xev.xproperty.atom == g_ska.net_wm_state)
+				window->is_fullscreen = ska_x11_read_fullscreen(window->xwindow);
 			break;
 
 		case MapNotify:

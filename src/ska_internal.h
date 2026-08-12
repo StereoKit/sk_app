@@ -296,6 +296,7 @@ struct ska_window_t {
 
 	bool should_close;
 	bool is_visible;
+	bool is_fullscreen; // Live platform-reported state, not the last request
 	bool has_focus;
 	bool mouse_inside;
 
