@@ -479,7 +479,7 @@ typedef enum ska_event_ {
 	// Keyboard events
 	ska_event_key_down,
 	ska_event_key_up,
-	ska_event_text_input,
+	ska_event_text_input, // Insertable text only, see ska_event_text_t
 
 	// Mouse events
 	ska_event_mouse_motion,
@@ -611,6 +611,11 @@ typedef struct ska_event_keyboard_t {
 	uint16_t          modifiers;
 } ska_event_keyboard_t;
 
+// Text the user intends to insert, and nothing else. Backends never synthesize
+// control codes (U+0000 to U+001F, U+007F) from a key press, so editing intent
+// such as backspace, delete, enter, escape, and tab arrives as a key event
+// instead. Text produced by IME composition or clipboard paste passes through
+// unmodified, and may legitimately contain '\n' or '\t'.
 typedef struct ska_event_text_t {
 	ska_window_id_t   window_id;
 	char              text[32];  // UTF-8 text
@@ -984,7 +989,8 @@ SKA_API bool ska_android_on_input(void *java_input_event);
 // ============================================================================
 
 // Check if text input is available in the queue.
-// Queue is populated automatically from ska_event_text_input events during ska_event_poll().
+// Queue is populated automatically from ska_event_text_input events during ska_event_poll(),
+// so it holds insertable text only. Editing keys come from ska_event_key_down.
 //
 // @return true if characters are available to consume, false if queue is empty
 SKA_API bool ska_text_has_input(void);

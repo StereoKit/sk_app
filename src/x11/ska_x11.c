@@ -1006,7 +1006,10 @@ void ska_x11_pump_events(void) {
 				KeySym keysym_text;
 				Status status;
 				int32_t len = Xutf8LookupString(window->xic, &xev.xkey, buffer, sizeof(buffer) - 1, &keysym_text, &status);
-				if (len > 0 && (status == XLookupChars || status == XLookupBoth)) {
+				// Control codes here are key presses, not text. A UTF-8 lead
+				// byte is never one, so the first byte also covers IME commits.
+				if (len > 0 && (status == XLookupChars || status == XLookupBoth) &&
+				    (unsigned char)buffer[0] >= 0x20 && buffer[0] != 0x7f) {
 					buffer[len] = '\0';
 					event.type = ska_event_text_input;
 					event.text.window_id = window->id;

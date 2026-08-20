@@ -126,7 +126,7 @@ static bool ska_web_key_is_text(const char* key) {
 	if (codepoints != 1) return false;
 
 	// Single ASCII control chars aren't text
-	return (uint8_t)key[0] >= 0x20;
+	return (uint8_t)key[0] >= 0x20 && key[0] != 0x7f;
 }
 
 // ============================================================================

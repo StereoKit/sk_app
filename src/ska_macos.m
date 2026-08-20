@@ -817,18 +817,10 @@ void ska_platform_pump_events(void) {
 							NSString* text  = nsevent.characters;
 							unichar   first = [text characterAtIndex:0];
 
-							if (first >= 0xF700 && first <= 0xF8FF) {
-								/* Cocoa reports function keys (arrows,
-								   F-keys, ...) as private-use codepoints;
-								   those are not text. Forward delete is the
-								   only one with a text equivalent: DEL, as
-								   X11 produces. */
-								text = (first == NSDeleteFunctionKey) ? @"\x7f" : nil;
-							} else if (first == 0x7f) {
-								/* Cocoa reports the backspace key as DEL;
-								   Win32 and X11 both send BS. */
-								text = @"\b";
-							}
+							/* Cocoa reports function keys as private-use
+							   codepoints and backspace as DEL, all key presses. */
+							if ((first >= 0xF700 && first <= 0xF8FF) || first < 0x20 || first == 0x7f)
+								text = nil;
 
 							const char* utf8 = text ? [text UTF8String] : NULL;
 							if (utf8 && strlen(utf8) > 0) {

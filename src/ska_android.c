@@ -845,7 +845,8 @@ static bool ska_android_post_key(int32_t action, int32_t keycode, int32_t meta_s
 	if (keycode < 0 || keycode >= 256) return false;
 
 	ska_window_t *window = g_ska.windows[0];
-	bool pressed = (action == AKEY_EVENT_ACTION_DOWN);
+	// A MULTIPLE action is a repeat, so it stays down. Only UP releases.
+	bool pressed = (action != AKEY_EVENT_ACTION_UP);
 	bool repeat  = (action == AKEY_EVENT_ACTION_MULTIPLE);
 
 	ska_event_t ev = {0};

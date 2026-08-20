@@ -356,7 +356,9 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 
 		case WM_CHAR:
 		case WM_SYSCHAR: {
-			if (window && wparam > 0 && wparam < 0x10000) {
+			// WM_CHAR reports backspace, tab, enter, escape, and Ctrl+letter as
+			// control codes, which are key presses rather than text.
+			if (window && wparam >= 0x20 && wparam != 0x7f && wparam < 0x10000) {
 				wchar_t utf16[2] = { (wchar_t)wparam, 0 };
 				char* utf8 = ska_wide_to_utf8(utf16);
 				if (utf8) {
