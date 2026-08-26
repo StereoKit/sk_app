@@ -982,6 +982,49 @@ SKA_API void ska_android_on_window_resized(int32_t width, int32_t height);
 // @param java_input_event jobject for MotionEvent or KeyEvent (cast to void*)
 // @return true if the event was consumed
 SKA_API bool ska_android_on_input(void *java_input_event);
+
+// ---- Runtime Permissions ----
+// Android's permission model exposed as-is. Names are Android permission
+// strings, so callers are Android-specific already. sk_app contributes the
+// Java and JNI plumbing, not portability.
+
+typedef enum ska_android_permission_ {
+	ska_android_permission_undeclared, // Not in the manifest, never grantable
+	ska_android_permission_askable,    // Declared, not granted, ask for it
+	ska_android_permission_pending,    // A request is in flight
+	ska_android_permission_denied,     // Refused, a new request may ask again
+	ska_android_permission_blocked,    // Refused, the system won't ask again
+	ska_android_permission_granted,    // Usable right now
+} ska_android_permission_;
+
+// Current state of an Android permission, e.g.
+// "android.permission.RECORD_AUDIO". Resolved from the manifest on first use
+// and updated by request results, so this is a cheap lookup rather than a JNI
+// call. Re-queries the system on resume, the only way a permission changes
+// without a request.
+//
+// @param name Android permission string (required, not NULL)
+// @return Current state, undeclared for anything not in the manifest
+SKA_API ska_android_permission_ ska_android_permission_get(const char* name);
+
+// Will requesting this permission show the user a prompt? False for
+// permissions the system grants silently from the manifest entry.
+//
+// @param name Android permission string (required, not NULL)
+// @return true if a request for this permission presents UI
+SKA_API bool ska_android_permission_prompts(const char* name);
+
+// Request permissions from the system. Returns immediately; the names move to
+// ska_android_permission_pending and settle on their own. Duplicate names, and
+// names already granted or pending, collapse into a single system prompt.
+//
+// Requesting a blocked permission is legal but resolves without a prompt.
+// Fails from a Service context, which cannot prompt.
+//
+// @param names Array of Android permission strings (required, not NULL)
+// @param count Number of names (must be > 0)
+// @return true if the request went out (check ska_error_get() on false)
+SKA_API bool ska_android_permission_request(const char* const* names, int32_t count);
 #endif
 
 // ============================================================================

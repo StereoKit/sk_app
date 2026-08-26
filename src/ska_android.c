@@ -14,6 +14,7 @@
 #include <jni.h>
 #include <dlfcn.h>
 #include <unistd.h>
+#include <stdatomic.h>
 
 // Scancode translation table (Android key codes to ska_scancode_)
 static ska_scancode_ ska_android_scancode_table[256];
@@ -124,6 +125,28 @@ static struct {
 	jmethodID base64_decode;
 	bool      initialized;
 } g_kvp_jni = {0};
+
+// Runtime permission state. One entry per manifest permission, fixed at init;
+// only state mutates afterward, so reads need no lock.
+typedef struct {
+	const char*                     name;    // owned copy of the manifest string
+	ska_android_permission_         prev;    // state to restore if a request resolves without an answer
+	_Atomic ska_android_permission_ state;   // written from the UI thread on results
+	bool                            prompts; // protection level is dangerous, a request shows UI
+} ska_android_permission_t;
+
+// Cached JNI references and state table for runtime permissions
+static struct {
+	jclass    fragment_class;
+	jmethodID fragment_requestPermissions;
+	jmethodID ctx_checkSelfPermission;
+	bool      fragment_available;
+	bool      initialized;
+	ska_android_permission_t* perms;
+	int32_t                   perm_count;
+} g_permission_jni = {0};
+
+static void ska_android_permission_refresh(void);
 
 // ============================================================================
 // JNI Helpers
@@ -518,6 +541,9 @@ SKA_API void ska_android_on_event(ska_android_event_ event) {
 			ev.type = ska_event_app_foreground;
 			g_ska.app_is_visible = true;
 			ska_post_event(&ev);
+			// A Settings-app grant is the one permission change that arrives
+			// with no request behind it; catch it when we come back.
+			ska_android_permission_refresh();
 			ska_log(ska_log_info, "App resumed");
 			break;
 
@@ -1141,6 +1167,15 @@ void ska_platform_shutdown(void) {
 		if (g_file_dialog_jni.pm_class)       (*env)->DeleteGlobalRef(env, g_file_dialog_jni.pm_class);
 		if (g_file_dialog_jni.fragment_class) (*env)->DeleteGlobalRef(env, g_file_dialog_jni.fragment_class);
 		memset(&g_file_dialog_jni, 0, sizeof(g_file_dialog_jni));
+	}
+
+	// Release permission cache global refs and state table
+	if (env && g_permission_jni.initialized) {
+		if (g_permission_jni.fragment_class) (*env)->DeleteGlobalRef(env, g_permission_jni.fragment_class);
+		for (int32_t i = 0; i < g_permission_jni.perm_count; i++)
+			ska_free((void*)g_permission_jni.perms[i].name);
+		ska_free(g_permission_jni.perms);
+		memset(&g_permission_jni, 0, sizeof(g_permission_jni));
 	}
 
 	// Release kvp store cache global refs
@@ -2395,6 +2430,311 @@ ska_native_on_activity_result(
 {
 	(void)clazz;
 	ska_android_dispatch_activity_result(env, request_id, result_code, uris);
+}
+
+// ============================================================================
+// Runtime Permissions
+// ============================================================================
+// State lives here because pending and blocked have no system query; the rest
+// refreshes from checkSelfPermission on request results and on resume.
+
+static void JNICALL ska_native_on_permission_result(JNIEnv*, jclass, jobjectArray, jintArray, jbooleanArray);
+
+static ska_android_permission_t* ska_permission_find(const char* name) {
+	for (int32_t i = 0; i < g_permission_jni.perm_count; i++)
+		if (strcmp(g_permission_jni.perms[i].name, name) == 0) return &g_permission_jni.perms[i];
+	return NULL;
+}
+
+// PackageManager.PERMISSION_GRANTED == 0
+static bool ska_permission_check_granted(JNIEnv* env, const char* name) {
+	jstring jname  = (*env)->NewStringUTF(env, name);
+	jint    result = (*env)->CallIntMethod(env, (jobject)g_ska.android_context, g_permission_jni.ctx_checkSelfPermission, jname);
+	(*env)->DeleteLocalRef(env, jname);
+	return result == 0;
+}
+
+static void ska_permission_jni_init(void) {
+	if (g_permission_jni.initialized) return;
+
+	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
+	if (!env || !g_ska.android_context) return;
+
+	jobject context   = (jobject)g_ska.android_context;
+	jclass  ctx_class = (*env)->GetObjectClass(env, context);
+	g_permission_jni.ctx_checkSelfPermission = (*env)->GetMethodID(env, ctx_class, "checkSelfPermission", "(Ljava/lang/String;)I");
+	if (!g_permission_jni.ctx_checkSelfPermission) {
+		// Pre-API-23, runtime permissions don't exist
+		(*env)->ExceptionClear(env);
+		(*env)->DeleteLocalRef(env, ctx_class);
+		g_permission_jni.initialized = true;
+		return;
+	}
+
+	// Manifest scan: every entry in requestedPermissions gets a state table
+	// slot. Anything else is undeclared and needs no storage.
+	jmethodID ctx_getPackageManager = (*env)->GetMethodID(env, ctx_class, "getPackageManager", "()Landroid/content/pm/PackageManager;");
+	jmethodID ctx_getPackageName    = (*env)->GetMethodID(env, ctx_class, "getPackageName",    "()Ljava/lang/String;");
+	(*env)->DeleteLocalRef(env, ctx_class);
+
+	jobject   pm                   = (*env)->CallObjectMethod(env, context, ctx_getPackageManager);
+	jclass    pm_class             = (*env)->GetObjectClass(env, pm);
+	jmethodID pm_getPackageInfo    = (*env)->GetMethodID(env, pm_class, "getPackageInfo",    "(Ljava/lang/String;I)Landroid/content/pm/PackageInfo;");
+	jmethodID pm_getPermissionInfo = (*env)->GetMethodID(env, pm_class, "getPermissionInfo", "(Ljava/lang/String;I)Landroid/content/pm/PermissionInfo;");
+	(*env)->DeleteLocalRef(env, pm_class);
+
+	jstring pkg_name = (jstring)(*env)->CallObjectMethod(env, context, ctx_getPackageName);
+	jobject pkg_info =          (*env)->CallObjectMethod(env, pm, pm_getPackageInfo, pkg_name, 4096); // PackageManager.GET_PERMISSIONS
+	(*env)->DeleteLocalRef(env, pkg_name);
+	if ((*env)->ExceptionCheck(env) || !pkg_info) {
+		(*env)->ExceptionClear(env);
+		if (pkg_info) (*env)->DeleteLocalRef(env, pkg_info);
+		(*env)->DeleteLocalRef(env, pm);
+		ska_log(ska_log_warn, "Could not read package info, no permissions available");
+		g_permission_jni.initialized = true;
+		return;
+	}
+
+	jclass       pkg_info_class = (*env)->GetObjectClass(env, pkg_info);
+	jfieldID     fid_requested  = (*env)->GetFieldID(env, pkg_info_class, "requestedPermissions", "[Ljava/lang/String;");
+	jobjectArray requested      = (jobjectArray)(*env)->GetObjectField(env, pkg_info, fid_requested);
+	(*env)->DeleteLocalRef(env, pkg_info_class);
+	(*env)->DeleteLocalRef(env, pkg_info);
+
+	jsize requested_count = requested ? (*env)->GetArrayLength(env, requested) : 0;
+	if (requested_count > 0)
+		g_permission_jni.perms = ska_calloc(requested_count, sizeof(ska_android_permission_t));
+
+	for (jsize i = 0; i < requested_count; i++) {
+		jstring jname = (jstring)(*env)->GetObjectArrayElement(env, requested, i);
+		if (!jname) continue;
+		const char* name = (*env)->GetStringUTFChars(env, jname, NULL);
+		if (!name) { (*env)->DeleteLocalRef(env, jname); continue; }
+
+		if (ska_permission_find(name)) { // duplicate manifest entry
+			(*env)->ReleaseStringUTFChars(env, jname, name);
+			(*env)->DeleteLocalRef(env, jname);
+			continue;
+		}
+
+		ska_android_permission_t* perm = &g_permission_jni.perms[g_permission_jni.perm_count];
+		perm->name = ska_strdup(name);
+		(*env)->ReleaseStringUTFChars(env, jname, name);
+
+		atomic_store(&perm->state, ska_permission_check_granted(env, perm->name)
+			? ska_android_permission_granted
+			: ska_android_permission_askable);
+
+		// Protection level dangerous means a request presents UI. getProtection
+		// is API 28+, older devices fall back to the raw protectionLevel field.
+		jobject info = (*env)->CallObjectMethod(env, pm, pm_getPermissionInfo, jname, 0);
+		if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); info = NULL; }
+		if (info) {
+			jclass    info_class    = (*env)->GetObjectClass(env, info);
+			jmethodID getProtection = (*env)->GetMethodID(env, info_class, "getProtection", "()I");
+			jint      protection;
+			if (getProtection) {
+				protection = (*env)->CallIntMethod(env, info, getProtection);
+			} else {
+				(*env)->ExceptionClear(env);
+				jfieldID fid_level = (*env)->GetFieldID(env, info_class, "protectionLevel", "I");
+				protection = (*env)->GetIntField(env, info, fid_level) & 0xf; // PROTECTION_MASK_BASE
+			}
+			perm->prompts = protection == 1; // PROTECTION_DANGEROUS
+			(*env)->DeleteLocalRef(env, info_class);
+			(*env)->DeleteLocalRef(env, info);
+		}
+
+		(*env)->DeleteLocalRef(env, jname);
+		g_permission_jni.perm_count++;
+	}
+	if (requested) (*env)->DeleteLocalRef(env, requested);
+	(*env)->DeleteLocalRef(env, pm);
+
+	// SkAppResultFragment carries the request and its result callback. Without
+	// it, permission state still works but requests fail loudly.
+	g_permission_jni.fragment_available = false;
+	jclass fragment_class = ska_android_find_app_class(env, "net.stereokit.sk_app.SkAppResultFragment");
+	if (fragment_class) {
+		g_permission_jni.fragment_class = (*env)->NewGlobalRef(env, fragment_class);
+		g_permission_jni.fragment_requestPermissions = (*env)->GetStaticMethodID(env,
+			fragment_class, "requestPermissions",
+			"(Landroid/app/Activity;I[Ljava/lang/String;)V");
+		if (g_permission_jni.fragment_requestPermissions) {
+			static const JNINativeMethod methods[] = {{
+				"nativeOnPermissionResult", "([Ljava/lang/String;[I[Z)V",
+				(void*)ska_native_on_permission_result
+			}};
+			(*env)->RegisterNatives(env, fragment_class, methods, 1);
+			g_permission_jni.fragment_available = true;
+		} else {
+			// Stale sk_app.jar predating the permission methods
+			(*env)->ExceptionClear(env);
+		}
+		(*env)->DeleteLocalRef(env, fragment_class);
+	}
+	if (!g_permission_jni.fragment_available)
+		ska_log(ska_log_warn, "SkAppResultFragment permission support not found, "
+			"permission requests require current sk_app Java classes");
+
+	g_permission_jni.initialized = true;
+}
+
+// Re-query for changes that arrive without a request result: a grant from the
+// Settings app, or a request that died without an answer.
+static void ska_android_permission_refresh(void) {
+	if (!g_permission_jni.initialized || g_permission_jni.perm_count == 0) return;
+
+	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
+	if (!env) return;
+
+	for (int32_t i = 0; i < g_permission_jni.perm_count; i++) {
+		ska_android_permission_t* perm  = &g_permission_jni.perms[i];
+		ska_android_permission_   state = atomic_load(&perm->state);
+		if (state == ska_android_permission_granted) continue;
+		if (ska_permission_check_granted(env, perm->name))
+			atomic_store(&perm->state, ska_android_permission_granted);
+		else if (state == ska_android_permission_pending)
+			// Results land before onResume, so pending here got no answer
+			atomic_store(&perm->state, perm->prev);
+	}
+}
+
+// Called from SkAppResultFragment on the Android UI thread.
+static void JNICALL ska_native_on_permission_result(
+	JNIEnv* env, jclass clazz, jobjectArray jnames, jintArray jgrants, jbooleanArray jno_rationale)
+{
+	(void)clazz;
+	jsize name_count  = jnames  ? (*env)->GetArrayLength(env, jnames)  : 0;
+	jsize grant_count = jgrants ? (*env)->GetArrayLength(env, jgrants) : 0;
+
+	// Android delivers empty arrays when the request is interrupted, and
+	// nothing says which names were involved, so rescue every pending entry.
+	if (name_count == 0 || grant_count == 0) {
+		ska_android_permission_refresh();
+		return;
+	}
+	if (grant_count < name_count) name_count = grant_count;
+
+	jint*     grants       = (*env)->GetIntArrayElements(env, jgrants, NULL);
+	jboolean* no_rationale = (*env)->GetBooleanArrayElements(env, jno_rationale, NULL);
+
+	for (jsize i = 0; i < name_count; i++) {
+		jstring jname = (jstring)(*env)->GetObjectArrayElement(env, jnames, i);
+		if (!jname) continue;
+		const char* name = (*env)->GetStringUTFChars(env, jname, NULL);
+		ska_android_permission_t* perm = name ? ska_permission_find(name) : NULL;
+		if (perm) {
+			// Rationale false after a denial is the system saying it will not
+			// prompt for this permission again.
+			ska_android_permission_ state =
+				  grants[i] == 0  ? ska_android_permission_granted
+				: no_rationale[i] ? ska_android_permission_blocked
+				:                   ska_android_permission_denied;
+			atomic_store(&perm->state, state);
+			ska_log(ska_log_info, "Permission %s: %s", name,
+				state == ska_android_permission_granted ? "granted" :
+				state == ska_android_permission_blocked ? "blocked" : "denied");
+		}
+		if (name) (*env)->ReleaseStringUTFChars(env, jname, name);
+		(*env)->DeleteLocalRef(env, jname);
+	}
+
+	(*env)->ReleaseIntArrayElements    (env, jgrants,       grants,       JNI_ABORT);
+	(*env)->ReleaseBooleanArrayElements(env, jno_rationale, no_rationale, JNI_ABORT);
+}
+
+SKA_API ska_android_permission_ ska_android_permission_get(const char* name) {
+	ska_permission_jni_init();
+	ska_android_permission_t* perm = ska_permission_find(name);
+	return perm ? atomic_load(&perm->state) : ska_android_permission_undeclared;
+}
+
+SKA_API bool ska_android_permission_prompts(const char* name) {
+	ska_permission_jni_init();
+	ska_android_permission_t* perm = ska_permission_find(name);
+	return perm ? perm->prompts : false;
+}
+
+SKA_API bool ska_android_permission_request(const char* const* names, int32_t count) {
+	if (count <= 0) {
+		ska_set_error("ska_android_permission_request: count must be > 0");
+		return false;
+	}
+	if (!g_ska.android_context || !g_ska.android_is_activity) {
+		ska_set_error("Permission requests require an Activity context");
+		return false;
+	}
+
+	ska_permission_jni_init();
+	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
+	if (!env || !g_permission_jni.initialized) {
+		ska_set_error("JNI not initialized for permissions");
+		return false;
+	}
+	if (!g_permission_jni.fragment_available) {
+		ska_set_error("SkAppResultFragment not available, cannot request permissions");
+		return false;
+	}
+
+	// Collapse duplicates, undeclared names, and permissions already granted
+	// or in flight. What remains is what the system needs to see.
+	ska_android_permission_t** ask       = ska_malloc(sizeof(*ask) * count);
+	int32_t                    ask_count = 0;
+	for (int32_t i = 0; i < count; i++) {
+		ska_android_permission_t* perm = ska_permission_find(names[i]);
+		if (!perm) {
+			ska_log(ska_log_warn, "Permission %s is not in the manifest, it can never be granted", names[i]);
+			continue;
+		}
+		ska_android_permission_ state = atomic_load(&perm->state);
+		if (state == ska_android_permission_granted ||
+		    state == ska_android_permission_pending) continue;
+		bool duplicate = false;
+		for (int32_t d = 0; d < ask_count; d++)
+			if (ask[d] == perm) { duplicate = true; break; }
+		if (!duplicate) ask[ask_count++] = perm;
+	}
+	if (ask_count == 0) {
+		// Everything is already granted, in flight, or impossible
+		ska_free(ask);
+		return true;
+	}
+
+	jclass       string_class = (*env)->FindClass(env, "java/lang/String");
+	jobjectArray jnames       = (*env)->NewObjectArray(env, ask_count, string_class, NULL);
+	(*env)->DeleteLocalRef(env, string_class);
+	for (int32_t i = 0; i < ask_count; i++) {
+		jstring jname = (*env)->NewStringUTF(env, ask[i]->name);
+		(*env)->SetObjectArrayElement(env, jnames, i, jname);
+		(*env)->DeleteLocalRef(env, jname);
+	}
+
+	// Mark pending before the Java call so a fast result can't race the update
+	for (int32_t i = 0; i < ask_count; i++) {
+		ask[i]->prev = atomic_load(&ask[i]->state);
+		atomic_store(&ask[i]->state, ska_android_permission_pending);
+	}
+
+	// Request code 0x5C, outside the file dialog's 0x5B00 range. Results key
+	// off permission names, so one code serves every request.
+	(*env)->CallStaticVoidMethod(env, g_permission_jni.fragment_class,
+		g_permission_jni.fragment_requestPermissions,
+		(jobject)g_ska.android_context, 0x5C, jnames);
+	(*env)->DeleteLocalRef(env, jnames);
+
+	if ((*env)->ExceptionCheck(env)) {
+		(*env)->ExceptionClear(env);
+		for (int32_t i = 0; i < ask_count; i++)
+			atomic_store(&ask[i]->state, ask[i]->prev);
+		ska_free(ask);
+		ska_set_error("Failed to start permission request");
+		return false;
+	}
+
+	ska_log(ska_log_info, "Requested %d permission(s)", ask_count);
+	ska_free(ask);
+	return true;
 }
 
 // ============================================================================
