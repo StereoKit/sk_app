@@ -800,9 +800,8 @@ SKA_API bool ska_clipboard_set_text(const char* text) {
 // Logging
 // ============================================================================
 
-SKA_API void ska_log(ska_log_ level, const char* fmt, ...) {
-	va_list args;
-	va_start(args, fmt);
+static void ska_default_log(ska_log_ level, const char* text, void* user_data) {
+	(void)user_data;
 
 #ifdef SKA_PLATFORM_ANDROID
 	int android_level;
@@ -812,7 +811,7 @@ SKA_API void ska_log(ska_log_ level, const char* fmt, ...) {
 		case ska_log_error: android_level = ANDROID_LOG_ERROR; break;
 		default:            android_level = ANDROID_LOG_INFO;  break;
 	}
-	__android_log_vprint(android_level, "sk_app", fmt, args);
+	__android_log_write(android_level, "sk_app", text);
 #else
 	FILE* output = (level == ska_log_error) ? stderr : stdout;
 	const char* prefix;
@@ -822,12 +821,37 @@ SKA_API void ska_log(ska_log_ level, const char* fmt, ...) {
 		case ska_log_error: prefix = "[ERROR] "; break;
 		default:            prefix = "[LOG] ";   break;
 	}
-	fprintf(output, "%s", prefix);
-	vfprintf(output, fmt, args);
-	fprintf(output, "\n");
+	fprintf(output, "%s%s\n", prefix, text);
 #endif
+}
 
+static ska_log_fn g_ska_log           = ska_default_log;
+static void*      g_ska_log_user_data = NULL;
+
+SKA_API void ska_callback_log(ska_log_fn opt_callback, void* opt_user_data) {
+	g_ska_log           = opt_callback ? opt_callback : ska_default_log;
+	g_ska_log_user_data = opt_user_data;
+}
+
+SKA_API void ska_log(ska_log_ level, const char* fmt, ...) {
+	char    stack_text[512];
+	char*   text = stack_text;
+	va_list args, copy;
+	va_start(args, fmt);
+	va_copy (copy, args);
+
+	int32_t length = vsnprintf(stack_text, sizeof(stack_text), fmt, args);
+	if (length >= (int32_t)sizeof(stack_text)) {
+		text = (char*)ska_malloc((size_t)length + 1);
+		if (text) vsnprintf(text, (size_t)length + 1, fmt, copy);
+		else      text = stack_text;
+	}
+
+	va_end(copy);
 	va_end(args);
+
+	if (length >= 0) g_ska_log(level, text, g_ska_log_user_data);
+	if (text != stack_text) ska_free(text);
 }
 
 // ============================================================================

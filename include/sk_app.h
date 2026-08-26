@@ -1339,8 +1339,22 @@ typedef enum ska_log_ {
 	ska_log_error,
 } ska_log_;
 
+// Callback for receiving log messages, see ska_callback_log().
+// Text is a single formatted line without a trailing newline, and is only valid
+// for the duration of the call.
+typedef void (*ska_log_fn)(ska_log_ level, const char* text, void* user_data);
+
+// Redirect sk_app's log output to a custom callback.
+// Replaces the default output described in ska_log(). Safe to call before
+// ska_init(), and from any thread that isn't logging concurrently.
+//
+// @param opt_callback Receives log messages, or NULL to restore the default
+// @param opt_user_data User data passed to callback (can be NULL)
+SKA_API void ska_callback_log(ska_log_fn opt_callback, void* opt_user_data);
+
 // Cross-platform logging function.
-// Android: uses __android_log_vprint() to logcat with tag "sk_app"
+// Default output when no ska_callback_log() is set:
+// Android: uses __android_log_write() to logcat with tag "sk_app"
 // Desktop: prints to stdout (info/warn) or stderr (error) with level prefix like "[ERROR] "
 // Automatically appends newline on desktop, not needed on Android.
 //
