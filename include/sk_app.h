@@ -989,7 +989,8 @@ SKA_API bool ska_android_on_input(void *java_input_event);
 // Java and JNI plumbing, not portability.
 
 typedef enum ska_android_permission_ {
-	ska_android_permission_undeclared, // Not in the manifest, never grantable
+	ska_android_permission_undeclared, // Nothing can grant it: absent from the
+	                                   // manifest, or unknown to the platform
 	ska_android_permission_askable,    // Declared, not granted, ask for it
 	ska_android_permission_pending,    // A request is in flight
 	ska_android_permission_denied,     // Refused, a new request may ask again
@@ -1004,7 +1005,8 @@ typedef enum ska_android_permission_ {
 // without a request.
 //
 // @param name Android permission string (required, not NULL)
-// @return Current state, undeclared for anything not in the manifest
+// @return Current state, undeclared for anything the manifest doesn't declare
+//         or the platform doesn't define
 SKA_API ska_android_permission_ ska_android_permission_get(const char* name);
 
 // Will requesting this permission show the user a prompt? False for

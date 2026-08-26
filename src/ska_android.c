@@ -2543,6 +2543,10 @@ static void ska_permission_jni_init(void) {
 			perm->prompts = protection == 1; // PROTECTION_DANGEROUS
 			(*env)->DeleteLocalRef(env, info_class);
 			(*env)->DeleteLocalRef(env, info);
+		} else {
+			// getPermissionInfo throws for a name this platform has never
+			// heard of, which is as ungrantable as a missing manifest entry.
+			atomic_store(&perm->state, ska_android_permission_undeclared);
 		}
 
 		(*env)->DeleteLocalRef(env, jname);
