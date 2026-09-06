@@ -42,7 +42,8 @@ bool ImGui_ImplSkApp_ProcessEvent (const struct ska_event_t* event);
 //
 // To handle DPI changes at runtime (e.g., moving window between monitors):
 // 1. Watch for ska_event_window_dpi_changed in your event loop
-// 2. When received, rebuild fonts at the new scale and call ImGui_ImplSkRenderer_CreateFontsTexture()
+// 2. When received, rebuild fonts at the new scale. The renderer backend
+//    re-uploads the atlas on its own.
 float ImGui_ImplSkApp_GetDpiScale (void);
 
 #ifdef __cplusplus

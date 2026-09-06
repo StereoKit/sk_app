@@ -144,7 +144,7 @@ int32_t main(int argc, char** argv) {
 
 	// Initialize Dear ImGui
 	igCreateContext(NULL);
-	ImGuiIO* io = igGetIO();
+	ImGuiIO* io = igGetIO_Nil();
 	io->ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable keyboard controls
 
 	// Initialize ImGui backends
@@ -263,7 +263,6 @@ int32_t main(int argc, char** argv) {
 						ImFontAtlas_AddFontDefault(io->Fonts, cfg);
 						ImFontConfig_destroy(cfg);
 					}
-					ImGui_ImplSkRenderer_CreateFontsTexture();
 					*igGetStyle() = base_style;
 					ImGuiStyle_ScaleAllSizes(igGetStyle(), dpi_scale);
 					print_sizes(window, &surface, "dpi");
