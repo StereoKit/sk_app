@@ -386,8 +386,15 @@ bool ska_platform_init(void) {
 		// ska_web_check_blocking_loop.
 		EM_ASM({
 			Module.skaRafCounter = 0;
-			var tick = function() {
+			Module.skaRafTime    = 0;
+			Module.skaRafDeltas  = [];
+			var tick = function(t) {
 				Module.skaRafCounter++;
+				if (Module.skaRafTime) {
+					Module.skaRafDeltas.push(t - Module.skaRafTime);
+					if (Module.skaRafDeltas.length > 5) Module.skaRafDeltas.shift();
+				}
+				Module.skaRafTime = t;
 				requestAnimationFrame(tick);
 			};
 			requestAnimationFrame(tick);
@@ -680,9 +687,32 @@ float ska_platform_get_dpi_scale(const ska_window_t* window) {
 
 float ska_platform_get_refresh_rate(const ska_window_t* window) {
 	(void)window;
-	// Browsers expose no display-mode API; requestAnimationFrame paces frames
-	// to the display anyway, so report the common default
-	return 60.0f;
+	// Browsers expose no display-mode API, so this is requestAnimationFrame's
+	// cadence: the interval with the most neighbours within a percent, so an
+	// odd frame is outvoted, and ties go to the shortest so equals don't flicker
+	double ms = EM_ASM_DOUBLE({
+		var d = Module.skaRafDeltas;
+		if (!d || d.length < 4) return 0;
+		var best  = 0;
+		var votes = 0;
+		for (var i = 0; i < d.length; i++) {
+			var n = 0;
+			for (var j = 0; j < d.length; j++) if (Math.abs(d[j] - d[i]) <= d[i] * 0.01) n++;
+			if (n > votes || (n === votes && d[i] < best)) { votes = n; best = d[i]; }
+		}
+		return best;
+	});
+	return ms > 0 ? (float)(1000.0 / ms) : 0.0f;
+}
+
+uint64_t ska_platform_get_vblank_ns(const ska_window_t* window) {
+	(void)window;
+	// Measured as an age rather than read as a stamp: clock_gettime maps onto
+	// performance.now here, but with pthreads it shifts to timeOrigin and the
+	// heartbeat's requestAnimationFrame timestamp does not
+	double age_ms = EM_ASM_DOUBLE({ return Module.skaRafTime ? performance.now() - Module.skaRafTime : -1; });
+	if (age_ms < 0) return 0;
+	return ska_time_to_elapsed_ns(ska_get_time_ns() - (uint64_t)(age_ms * 1000000.0));
 }
 
 // ============================================================================

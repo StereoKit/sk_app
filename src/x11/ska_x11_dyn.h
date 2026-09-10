@@ -21,31 +21,38 @@
 #include <X11/extensions/Xrandr.h>
 #include <X11/extensions/XInput2.h>
 #include <X11/extensions/sync.h>
+#include "ska_x11_present.h"
 
-#define SKA_X11_SYM(name)     extern __typeof__(name)* ska_dyn_##name;
-#define SKA_XRANDR_SYM(name)  extern __typeof__(name)* ska_dyn_##name;
-#define SKA_XCURSOR_SYM(name) extern __typeof__(name)* ska_dyn_##name;
-#define SKA_XI2_SYM(name)     extern __typeof__(name)* ska_dyn_##name;
-#define SKA_XEXT_SYM(name)    extern __typeof__(name)* ska_dyn_##name;
+#define SKA_X11_SYM(name)      extern __typeof__(name)* ska_dyn_##name;
+#define SKA_XRANDR_SYM(name)   extern __typeof__(name)* ska_dyn_##name;
+#define SKA_XCURSOR_SYM(name)  extern __typeof__(name)* ska_dyn_##name;
+#define SKA_XI2_SYM(name)      extern __typeof__(name)* ska_dyn_##name;
+#define SKA_XEXT_SYM(name)     extern __typeof__(name)* ska_dyn_##name;
+#define SKA_XPRESENT_SYM(name) extern __typeof__(name)* ska_dyn_##name;
 #include "ska_x11_syms.h"
 #undef SKA_X11_SYM
 #undef SKA_XRANDR_SYM
 #undef SKA_XCURSOR_SYM
 #undef SKA_XI2_SYM
 #undef SKA_XEXT_SYM
+#undef SKA_XPRESENT_SYM
 
 // Loads libX11, which is the only one the backend cannot run without: a miss
 // there returns false and lets backend selection fall through. The rest are
 // optional, and each costs one feature. libXi is relative mouse mode, libXext
 // the resize frame-sync handshake, libXcursor themed cursors, libXrandr the
-// refresh rate.
+// refresh rate, libXpresent the vblank time.
 bool ska_x11_dyn_load(void);
 bool ska_x11_dyn_has_xi2(void);
 bool ska_x11_dyn_has_xext(void);
 bool ska_x11_dyn_has_xcursor(void);
 bool ska_x11_dyn_has_xrandr(void);
+bool ska_x11_dyn_has_xpresent(void);
 void ska_x11_dyn_unload(void);
 
+#define XPresentQueryExtension       ska_dyn_XPresentQueryExtension
+#define XPresentSelectInput          ska_dyn_XPresentSelectInput
+#define XPresentNotifyMSC            ska_dyn_XPresentNotifyMSC
 #define XQueryExtension              ska_dyn_XQueryExtension
 #define XGetEventData                ska_dyn_XGetEventData
 #define XFreeEventData               ska_dyn_XFreeEventData

@@ -6,6 +6,7 @@
 #ifdef SKA_PLATFORM_WIN32
 
 #include <windowsx.h>
+#include <dwmapi.h>
 
 // Scancode translation table (VK codes to ska_scancode_)
 static ska_scancode_ ska_win32_scancode_table[256];
@@ -910,6 +911,13 @@ float ska_platform_get_dpi_scale(const ska_window_t* window) {
 	}
 
 	return 1.0f;
+}
+
+uint64_t ska_platform_get_vblank_ns(const ska_window_t* window) {
+	(void)window;
+	DWM_TIMING_INFO info = { .cbSize = sizeof(info) };
+	if (FAILED(DwmGetCompositionTimingInfo(NULL, &info)) || info.qpcVBlank == 0) return 0;
+	return ska_time_to_elapsed_ns(ska_qpc_to_ns((uint64_t)info.qpcVBlank));
 }
 
 float ska_platform_get_refresh_rate(const ska_window_t* window) {

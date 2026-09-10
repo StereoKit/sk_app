@@ -167,6 +167,10 @@ float ska_platform_get_refresh_rate(const ska_window_t* window) {
 	return g_ska.lnx->get_refresh_rate(window);
 }
 
+uint64_t ska_platform_get_vblank_ns(const ska_window_t* window) {
+	return g_ska.lnx->get_vblank_ns(window);
+}
+
 void ska_platform_show_cursor(bool show) {
 	g_ska.lnx->show_cursor(show);
 }

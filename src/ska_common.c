@@ -459,6 +459,10 @@ SKA_API float ska_window_get_refresh_rate(const ska_window_t* window) {
 	return ska_platform_get_refresh_rate(window);
 }
 
+SKA_API uint64_t ska_window_get_vblank_ns(const ska_window_t* window) {
+	return ska_platform_get_vblank_ns(window);
+}
+
 SKA_API void ska_window_show(ska_window_t* ref_window) {
 	if (!ref_window) return;
 	ska_platform_window_show(ref_window);
@@ -742,21 +746,33 @@ SKA_API bool ska_vk_create_surface(const ska_window_t* window, void* instance, v
 // Utilities
 // ============================================================================
 
+#ifdef SKA_PLATFORM_WIN32
+uint64_t ska_qpc_to_ns(uint64_t ticks) {
+	// Split so ticks * 1e9 can't overflow
+	uint64_t freq = (uint64_t)g_qpc_frequency.QuadPart;
+	return (ticks / freq) * 1000000000ULL + (ticks % freq) * 1000000000ULL / freq;
+}
+#endif
+
+#ifdef SKA_PLATFORM_MACOS
+uint64_t ska_mach_to_ns(uint64_t ticks) {
+	static mach_timebase_info_data_t timebase = {0};
+	if (timebase.denom == 0) mach_timebase_info(&timebase);
+	return ticks * timebase.numer / timebase.denom;
+}
+#endif
+
+uint64_t ska_time_to_elapsed_ns(uint64_t raw_ns) {
+	return raw_ns > g_ska.start_time ? raw_ns - g_ska.start_time : 0;
+}
+
 uint64_t ska_get_time_ns(void) {
 #ifdef SKA_PLATFORM_WIN32
 	LARGE_INTEGER counter;
 	QueryPerformanceCounter(&counter);
-	// Convert to nanoseconds: counter * 1e9 / frequency
-	// To avoid overflow, we do: (counter / freq) * 1e9 + (counter % freq) * 1e9 / freq
-	uint64_t whole_seconds = counter.QuadPart / g_qpc_frequency.QuadPart;
-	uint64_t remainder = counter.QuadPart % g_qpc_frequency.QuadPart;
-	return whole_seconds * 1000000000ULL + (remainder * 1000000000ULL) / g_qpc_frequency.QuadPart;
+	return ska_qpc_to_ns((uint64_t)counter.QuadPart);
 #elif defined(SKA_PLATFORM_MACOS)
-	static mach_timebase_info_data_t timebase = {0};
-	if (timebase.denom == 0) {
-		mach_timebase_info(&timebase);
-	}
-	return (mach_absolute_time() * timebase.numer) / timebase.denom;
+	return ska_mach_to_ns(mach_absolute_time());
 #else
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);

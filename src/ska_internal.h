@@ -63,6 +63,7 @@ char* ska_strdup(const char* str);
 #endif
 
 #ifdef SKA_PLATFORM_MACOS
+	#include <stdatomic.h>
 	#ifdef __OBJC__
 		#import <Cocoa/Cocoa.h>
 	#else
@@ -317,13 +318,16 @@ struct ska_window_t {
 	XSyncValue   x_sync_value;   // Value the current configure gets acked with
 	bool         x_sync_pending; // Sync request seen, awaiting its ConfigureNotify
 	bool         x_sync_ack;     // Configure handled, counter update due next pump
+	uint64_t     x_vblank_ns;    // Last Present NotifyMSC, raw clock
 	#endif
 	struct ska_wl_window_t* wl; // Wayland backend state, see ska_wayland.c
 #endif
 
 #ifdef SKA_PLATFORM_MACOS
-	id ns_window;   // NSWindow*
-	id ns_view;     // NSView*
+	id    ns_window;    // NSWindow*
+	id    ns_view;      // NSView*
+	void* cv_link;      // CVDisplayLinkRef
+	_Atomic uint64_t vblank_ticks; // mach ticks, written from the display link's thread
 #endif
 
 #ifdef SKA_PLATFORM_ANDROID
@@ -369,6 +373,7 @@ typedef struct ska_linux_vtable_t {
 	void  (*get_frame_extents)        (const ska_window_t* window, int32_t* opt_out_left, int32_t* opt_out_right, int32_t* opt_out_top, int32_t* opt_out_bottom);
 	float (*get_dpi_scale)            (const ska_window_t* window);
 	float (*get_refresh_rate)         (const ska_window_t* window);
+	uint64_t (*get_vblank_ns)         (const ska_window_t* window);
 
 	void  (*show_cursor)              (bool show);
 	void  (*set_cursor)               (ska_system_cursor_ cursor);
@@ -570,6 +575,7 @@ void ska_platform_window_raise(ska_window_t* ref_window);
 void ska_platform_window_get_drawable_size(ska_window_t* ref_window, int32_t* opt_out_width, int32_t* opt_out_height);
 float ska_platform_get_dpi_scale(const ska_window_t* window);
 float ska_platform_get_refresh_rate(const ska_window_t* window);
+uint64_t ska_platform_get_vblank_ns(const ska_window_t* window);
 
 // Platform-specific frame extents (title bar, borders)
 // Returns the size of window decorations: left, right, top (title bar), bottom
@@ -640,6 +646,13 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 
 // Utility functions
 uint64_t ska_get_time_ns(void);
+uint64_t ska_time_to_elapsed_ns(uint64_t raw_ns);  // A raw ska_get_time_ns stamp onto the elapsed clock, 0 if before init
+#ifdef SKA_PLATFORM_WIN32
+uint64_t ska_qpc_to_ns (uint64_t ticks);           // QueryPerformanceCounter ticks onto the ska_get_time_ns clock
+#endif
+#ifdef SKA_PLATFORM_MACOS
+uint64_t ska_mach_to_ns(uint64_t ticks);           // mach_absolute_time ticks onto the ska_get_time_ns clock
+#endif
 
 // Internal helper for event timestamps (milliseconds, wraps at ~49 days)
 static inline uint32_t ska_time_get_elapsed_ms(void) {

@@ -7,6 +7,7 @@
 #ifdef SKA_PLATFORM_MACOS
 
 #import <Cocoa/Cocoa.h>
+#import <CoreVideo/CoreVideo.h>
 #import <Carbon/Carbon.h>  /* For key codes */
 #import <IOKit/hidsystem/IOLLEvent.h>  /* For NX_DEVICE* modifier masks */
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -139,6 +140,18 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 	return mods;
 }
 
+/* Points the window's display link at the screen the window is on, so the
+   vblank it reports is that display's */
+static void ska_macos_display_link_follow(ska_window_t* window) {
+	NSScreen* screen = [(NSWindow*)window->ns_window screen];
+	NSNumber* number = screen ? [[screen deviceDescription] objectForKey:@"NSScreenNumber"] : nil;
+	if (!window->cv_link || !number) return;
+	#pragma clang diagnostic push
+	#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+	CVDisplayLinkSetCurrentCGDisplay(window->cv_link, [number unsignedIntValue]);
+	#pragma clang diagnostic pop
+}
+
 /* Window delegate for event handling */
 @interface SKAWindowDelegate : NSObject <NSWindowDelegate>
 @property (assign) ska_window_t* window;
@@ -210,6 +223,11 @@ static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
 		event.window.data2 = self.window->height;
 		ska_post_event(&event);
 	}
+}
+
+- (void)windowDidChangeScreen:(NSNotification*)notification {
+	if (!self.window) return;
+	ska_macos_display_link_follow(self.window);
 }
 
 - (void)windowDidMove:(NSNotification*)notification {
@@ -355,6 +373,14 @@ void ska_platform_shutdown(void) {
 	}
 }
 
+/* Runs on the display link's own thread; inNow is the vblank that fired it */
+static CVReturn ska_macos_display_link(CVDisplayLinkRef link, const CVTimeStamp* now, const CVTimeStamp* output, CVOptionFlags flags_in, CVOptionFlags* flags_out, void* data) {
+	(void)link; (void)output; (void)flags_in; (void)flags_out;
+	ska_window_t* window = data;
+	atomic_store(&window->vblank_ticks, now->hostTime);
+	return kCVReturnSuccess;
+}
+
 bool ska_platform_window_create(
 	ska_window_t* window,
 	const char* title,
@@ -401,6 +427,19 @@ bool ska_platform_window_create(
 		}
 
 		window->ns_window = nswindow;
+
+		/* CVDisplayLink is deprecated for NSView's display link, which needs
+		   macOS 14; this one runs everywhere sk_app does */
+		#pragma clang diagnostic push
+		#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+		CVDisplayLinkRef link = NULL;
+		if (CVDisplayLinkCreateWithActiveCGDisplays(&link) == kCVReturnSuccess) {
+			CVDisplayLinkSetOutputCallback(link, ska_macos_display_link, window);
+			CVDisplayLinkStart(link);
+			window->cv_link = link;
+		}
+		#pragma clang diagnostic pop
+		ska_macos_display_link_follow(window);
 
 		/* Set title */
 		NSString* ns_title = [NSString stringWithUTF8String:title];
@@ -463,6 +502,14 @@ bool ska_platform_window_create(
 
 void ska_platform_window_destroy(ska_window_t* window) {
 	@autoreleasepool {
+		if (window->cv_link) {
+			#pragma clang diagnostic push
+			#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+			CVDisplayLinkStop   (window->cv_link);
+			CVDisplayLinkRelease(window->cv_link);
+			#pragma clang diagnostic pop
+			window->cv_link = NULL;
+		}
 		if (window->ns_window) {
 			NSWindow* nswindow = (NSWindow*)window->ns_window;
 			[nswindow setDelegate:nil];
@@ -619,6 +666,10 @@ float ska_platform_get_dpi_scale(const ska_window_t* window) {
 		NSScreen* screen = [NSScreen mainScreen];
 		return screen ? (float)[screen backingScaleFactor] : 1.0f;
 	}
+}
+
+uint64_t ska_platform_get_vblank_ns(const ska_window_t* window) {
+	return ska_time_to_elapsed_ns(ska_mach_to_ns(atomic_load(&window->vblank_ticks)));
 }
 
 float ska_platform_get_refresh_rate(const ska_window_t* window) {

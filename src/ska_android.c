@@ -11,6 +11,8 @@
 #include <android/keycodes.h>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
+#include <android/choreographer.h>
+#include <android/looper.h>
 #include <jni.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -588,8 +590,11 @@ SKA_API void ska_android_on_event(ska_android_event_ event) {
 	}
 }
 
+static void ska_android_vblank_enable(bool enable);
+
 SKA_API void ska_android_on_window_created(void *native_window) {
 	if (!native_window) return;
+	ska_android_vblank_enable(true);
 
 	// If the window stub doesn't exist yet, stash for
 	// ska_platform_window_create to pick up.
@@ -627,6 +632,7 @@ SKA_API void ska_android_on_window_created(void *native_window) {
 }
 
 SKA_API void ska_android_on_window_destroyed(void) {
+	ska_android_vblank_enable(false);
 	if (g_ska.window_count == 0) return;
 
 	ska_window_t *window = g_ska.windows[0];
@@ -1471,6 +1477,67 @@ float ska_platform_get_dpi_scale(const ska_window_t* window) {
 	}
 
 	return 1.0f;
+}
+
+// Choreographer delivers on the looper of the thread that posted, which is
+// wherever the window arrived: the glue thread standalone, the host's UI thread
+// in library mode. The stamp crosses to the user's thread atomically.
+static _Atomic uint64_t g_android_vblank_ns;
+static bool             g_android_vblank_wanted; // A window exists, so the wakeups have a consumer
+static bool             g_android_vblank_posted; // A callback is outstanding
+
+static void ska_android_vblank_report(uint64_t frame_time_ns);
+
+#if __ANDROID_API__ >= 29
+static void ska_android_frame_callback(int64_t frame_time_ns, void* data) {
+	(void)data;
+	ska_android_vblank_report((uint64_t)frame_time_ns);
+}
+#else
+// Before API 29 the stamp is a long, which 32-bit ABIs truncate: the high bits
+// are rebuilt from now, since the callback trails its vblank by milliseconds
+static void ska_android_frame_callback(long frame_time_ns, void* data) {
+	(void)data;
+	uint64_t stamp = (uint64_t)(unsigned long)frame_time_ns;
+	if (sizeof(long) < 8) {
+		uint64_t now = ska_get_time_ns();
+		stamp |= now & ~0xFFFFFFFFULL;
+		if (stamp > now) stamp -= 0x100000000ULL;
+	}
+	ska_android_vblank_report(stamp);
+}
+#endif
+
+static void ska_android_vblank_post(void) {
+#if __ANDROID_API__ >= 29
+	AChoreographer_postFrameCallback64(AChoreographer_getInstance(), ska_android_frame_callback, NULL);
+#else
+	AChoreographer_postFrameCallback  (AChoreographer_getInstance(), ska_android_frame_callback, NULL);
+#endif
+}
+
+static void ska_android_vblank_report(uint64_t frame_time_ns) {
+	atomic_store(&g_android_vblank_ns, frame_time_ns);
+	g_android_vblank_posted = g_android_vblank_wanted;
+	if (g_android_vblank_wanted) ska_android_vblank_post();
+}
+
+// Vsync wakeups run only while a window can consume them, so a stopped
+// activity sleeps. Needs a looper on the calling thread, where the callback lands.
+static void ska_android_vblank_enable(bool enable) {
+	g_android_vblank_wanted = enable;
+	if (!enable || g_android_vblank_posted) return;
+	if (!ALooper_forThread()) {
+		ska_log(ska_log_warn, "ska_android_on_window_created called off a looper thread, so ska_window_get_vblank_ns reads 0");
+		return;
+	}
+	g_android_vblank_posted = true;
+	ska_android_vblank_post();
+}
+
+uint64_t ska_platform_get_vblank_ns(const ska_window_t* window) {
+	(void)window;
+	return ska_time_to_elapsed_ns(atomic_load(&g_android_vblank_ns));
 }
 
 float ska_platform_get_refresh_rate(const ska_window_t* window) {

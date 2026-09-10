@@ -30,7 +30,8 @@ static Cursor             g_x_invisible_cursor;
 static ska_system_cursor_ g_current_cursor = ska_system_cursor_arrow;
 static bool               g_x_relative;
 static bool               g_x_sync_ok;
-static int32_t            g_x_xi2_opcode = -1;
+static int32_t            g_x_xi2_opcode     = -1;
+static int32_t            g_x_present_opcode = -1;
 static double             g_x_rel_carry_x;
 static double             g_x_rel_carry_y;
 static int32_t            g_x_rel_restore_x; // Root-relative cursor position saved
@@ -71,6 +72,7 @@ static void ska_x11_log_optional(void) {
 		{ "libXrandr",      ska_x11_dyn_has_xrandr(),  "the display refresh rate reads as 0" },
 		{ "libXi",          ska_x11_dyn_has_xi2(),     "relative mouse mode is unavailable" },
 		{ "libXext",        g_x_sync_ok,               "resizing can stutter under mutter-family window managers" },
+		{ "libXpresent",    g_x_present_opcode >= 0,   "the display vblank time reads as 0" },
 		{ "X input method", g_ska.xim != NULL,         "text input is limited to plain keys, with no compose or IME" },
 	};
 
@@ -132,6 +134,10 @@ static bool ska_linux_ensure_x_display(void) {
 	g_x_sync_ok = ska_x11_dyn_has_xext() &&
 	              XSyncQueryExtension(display, &sync_event, &sync_error) &&
 	              XSyncInitialize    (display, &sync_major, &sync_minor);
+
+	int32_t present_opcode = 0, present_event = 0, present_error = 0;
+	if (ska_x11_dyn_has_xpresent() && XPresentQueryExtension(display, &present_opcode, &present_event, &present_error))
+		g_x_present_opcode = present_opcode;
 
 	// Watch root for RESOURCE_MANAGER property changes (xrdb-driven DPI changes).
 	XSelectInput(display, g_ska.x_root, PropertyChangeMask);
@@ -258,6 +264,8 @@ bool ska_x11_window_create(
 		                (unsigned char*)&window->x_sync_counter, 1);
 	}
 	XSetWMProtocols(g_ska.x_display, window->xwindow, protocols, protocol_count);
+	if (g_x_present_opcode >= 0)
+		XPresentSelectInput(g_ska.x_display, window->xwindow, SKA_PRESENT_COMPLETE_NOTIFY_MASK);
 
 	// Create input context
 	if (g_ska.xim) {
@@ -576,6 +584,10 @@ float ska_x11_get_dpi_scale(const ska_window_t* window) {
 	return 1.0f;
 }
 
+uint64_t ska_x11_get_vblank_ns(const ska_window_t* window) {
+	return ska_time_to_elapsed_ns(window->x_vblank_ns);
+}
+
 float ska_x11_get_refresh_rate(const ska_window_t* window) {
 	(void)window;
 
@@ -793,6 +805,17 @@ bool ska_x11_set_relative_mouse_mode(bool enabled) {
 	return true;
 }
 
+// UST is microseconds on CLOCK_MONOTONIC for DRI3 drivers; a stamp a second
+// or more from now is some other clock, and dropped
+static void ska_x11_handle_present_complete(const XPresentCompleteNotifyEvent* ev) {
+	ska_window_t* window = ska_find_window_by_xwindow(ev->window);
+	if (!window || ev->ust == 0) return;
+	uint64_t ust_ns = ev->ust * 1000;
+	uint64_t now_ns = ska_get_time_ns();
+	if (ust_ns + 1000000000 < now_ns || ust_ns > now_ns + 1000000000) return;
+	window->x_vblank_ns = ust_ns;
+}
+
 // Raw valuators are in device units and can be fractional, so the leftover is
 // carried rather than dropped, which is what keeps a slow drag registering.
 static void ska_x11_handle_raw_motion(const XIRawEvent* raw) {
@@ -867,6 +890,9 @@ void ska_x11_pump_events(void) {
 			win->x_sync_ack = false;
 			XSyncSetCounter(g_ska.x_display, win->x_sync_counter, win->x_sync_value);
 		}
+		// A NotifyMSC with no target answers at once with the last vblank
+		if (win && win->xwindow && g_x_present_opcode >= 0)
+			XPresentNotifyMSC(g_ska.x_display, win->xwindow, 0, 0, 0, 0);
 	}
 
 	while (XPending(g_ska.x_display)) {
@@ -875,6 +901,15 @@ void ska_x11_pump_events(void) {
 
 		// Filter through input method first
 		if (XFilterEvent(&xev, None)) {
+			continue;
+		}
+
+		if (xev.type == GenericEvent && xev.xcookie.extension == g_x_present_opcode) {
+			if (XGetEventData(g_ska.x_display, &xev.xcookie)) {
+				if (xev.xcookie.evtype == SKA_PRESENT_COMPLETE_NOTIFY)
+					ska_x11_handle_present_complete((const XPresentCompleteNotifyEvent*)xev.xcookie.data);
+				XFreeEventData(g_ska.x_display, &xev.xcookie);
+			}
 			continue;
 		}
 
@@ -1535,6 +1570,7 @@ const ska_linux_vtable_t ska_x11_vtable = {
 	.get_frame_extents         = ska_x11_get_frame_extents,
 	.get_dpi_scale             = ska_x11_get_dpi_scale,
 	.get_refresh_rate          = ska_x11_get_refresh_rate,
+	.get_vblank_ns             = ska_x11_get_vblank_ns,
 
 	.show_cursor               = ska_x11_show_cursor,
 	.set_cursor                = ska_x11_set_cursor,

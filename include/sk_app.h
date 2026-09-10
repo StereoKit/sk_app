@@ -368,10 +368,31 @@ SKA_API float ska_window_get_dpi_scale(const ska_window_t* window);
 // - macOS: Uses CGDisplayModeGetRefreshRate on the window's screen
 // - Android: Uses JNI to call Display.getRefreshRate(). Returns 0 from a
 //   Service context (requires Activity for getWindowManager()).
+// - Web: Browsers expose no display mode, so this is requestAnimationFrame's
+//   measured cadence. 0 for the first few frames.
 //
 // @param window Window handle
 // @return Refresh rate in Hz, or 0.0f if unavailable
 SKA_API float ska_window_get_refresh_rate(const ska_window_t* window);
+
+// The most recent vblank of the display the window is on, as the window
+// system reports it, on the ska_time_get_elapsed_ns clock. A frame produced
+// now lands on a later vblank. 0 before the first report, or where the
+// platform has none.
+//
+// Platform notes:
+// - Web: requestAnimationFrame's timestamp
+// - Linux/Wayland: wl_surface.frame callbacks, one requested per event pump
+// - Linux/X11: Present extension NotifyMSC, when libXpresent is available
+// - Win32: DwmGetCompositionTimingInfo's last vblank, which is the primary display's
+// - macOS: a CVDisplayLink following the window's screen
+// - Android: Choreographer frame callbacks, posted from the thread that delivers
+//   the window, so library-mode hosts should call ska_android_on_window_created
+//   from a looper thread such as the UI thread
+//
+// @param window Window handle
+// @return Vblank time in nanoseconds, or 0
+SKA_API uint64_t ska_window_get_vblank_ns(const ska_window_t* window);
 
 // Show window.
 // Maps the window to the display. Generates ska_event_window_shown.

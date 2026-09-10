@@ -87,3 +87,8 @@ SKA_XEXT_SYM(XSyncInitialize)
 SKA_XEXT_SYM(XSyncCreateCounter)
 SKA_XEXT_SYM(XSyncSetCounter)
 SKA_XEXT_SYM(XSyncDestroyCounter)
+
+// Present extension, for the display's vblank time
+SKA_XPRESENT_SYM(XPresentQueryExtension)
+SKA_XPRESENT_SYM(XPresentSelectInput)
+SKA_XPRESENT_SYM(XPresentNotifyMSC)

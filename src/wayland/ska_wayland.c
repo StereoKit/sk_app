@@ -23,7 +23,8 @@
 #include "wayland-client.h"
 #include "ska_decor.h" // After the shim, see the header for why
 
-#define SKA_WL_MAX_OUTPUTS 8
+#define SKA_WL_MAX_OUTPUTS      8
+#define SKA_WL_FRAME_CALLBACKS  4
 
 // fractional-scale-v1 reports scale as 120ths, so 120 is 100% and 180 is 150%.
 #define SKA_WL_SCALE_UNIT 120
@@ -132,6 +133,9 @@ typedef struct ska_wl_window_t {
 	int32_t pending_height;
 	bool    maximized;
 	bool    activated;
+
+	struct wl_callback* frame_callbacks[SKA_WL_FRAME_CALLBACKS]; // Outstanding wl_surface.frame requests
+	uint64_t            vblank_ns;                               // Raw clock, from the last frame callback
 } ska_wl_window_t;
 
 static ska_wl_state_t* ska_wl(void) { return g_ska.wl; }
@@ -349,6 +353,24 @@ static const struct wl_surface_listener k_surface_listener = {
 	.leave                     = ska_wl_surface_leave,
 	.preferred_buffer_scale    = ska_wl_surface_preferred_buffer_scale,
 	.preferred_buffer_transform = ska_wl_surface_preferred_buffer_transform,
+};
+
+// Milliseconds on a clock the protocol leaves unnamed; every compositor uses
+// CLOCK_MONOTONIC, so it's placed nearest to now, and a second off is another clock
+static void ska_wl_frame_done(void* data, struct wl_callback* callback, uint32_t ms) {
+	ska_wl_window_t* win = data;
+	for (int32_t i = 0; i < SKA_WL_FRAME_CALLBACKS; i++)
+		if (win->frame_callbacks[i] == callback) win->frame_callbacks[i] = NULL;
+	wl_callback_destroy(callback);
+
+	uint64_t now_ns   = ska_get_time_ns();
+	int32_t  delta_ms = (int32_t)(ms - (uint32_t)(now_ns / 1000000));
+	if (delta_ms <= -1000 || delta_ms >= 1000) return;
+	win->vblank_ns = (uint64_t)((int64_t)now_ns + (int64_t)delta_ms * 1000000);
+}
+
+static const struct wl_callback_listener k_frame_listener = {
+	.done = ska_wl_frame_done,
 };
 
 // ============================================================================
@@ -1426,6 +1448,8 @@ void ska_wl_window_destroy(ska_window_t* ref_window) {
 	if (wl->locked_pointer) ska_wl_release_pointer_lock();
 
 	ska_wl_destroy_toplevel(win);
+	for (int32_t i = 0; i < SKA_WL_FRAME_CALLBACKS; i++)
+		if (win->frame_callbacks[i]) wl_callback_destroy(win->frame_callbacks[i]);
 	if (win->fractional_scale) wp_fractional_scale_v1_destroy(win->fractional_scale);
 	if (win->viewport)         wp_viewport_destroy(win->viewport);
 	if (win->surface)          wl_surface_destroy(win->surface);
@@ -1620,6 +1644,10 @@ float ska_wl_get_refresh_rate(const ska_window_t* window) {
 		return (float)wl->outputs[i].refresh_mhz / 1000.0f;
 	}
 	return 0.0f;
+}
+
+uint64_t ska_wl_get_vblank_ns(const ska_window_t* window) {
+	return ska_time_to_elapsed_ns(window->wl->vblank_ns);
 }
 
 // ============================================================================
@@ -1872,6 +1900,19 @@ void ska_wl_pump_events(void) {
 		wl_display_cancel_read(display);
 	}
 	wl_display_dispatch_pending(display);
+
+	// A frame callback per pump rides the next commit and answers with the
+	// repaint that showed it; a few stay outstanding since that trails by a frame or two
+	for (uint32_t i = 0; i < SKA_MAX_WINDOWS; i++) {
+		ska_wl_window_t* win = g_ska.windows[i] ? g_ska.windows[i]->wl : NULL;
+		if (!win || !win->surface) continue;
+		for (int32_t c = 0; c < SKA_WL_FRAME_CALLBACKS; c++) {
+			if (win->frame_callbacks[c]) continue;
+			win->frame_callbacks[c] = wl_surface_frame(win->surface);
+			wl_callback_add_listener(win->frame_callbacks[c], &k_frame_listener, win);
+			break;
+		}
+	}
 
 	// A dead connection never recovers, and without this the loop would spin
 	// forever on a display that cannot deliver anything.
@@ -2208,6 +2249,7 @@ const ska_linux_vtable_t ska_wl_vtable = {
 	.get_frame_extents         = ska_wl_get_frame_extents,
 	.get_dpi_scale             = ska_wl_get_dpi_scale,
 	.get_refresh_rate          = ska_wl_get_refresh_rate,
+	.get_vblank_ns             = ska_wl_get_vblank_ns,
 
 	.show_cursor               = ska_wl_show_cursor,
 	.set_cursor                = ska_wl_set_cursor,
