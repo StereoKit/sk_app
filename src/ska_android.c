@@ -521,12 +521,20 @@ static ska_mouse_button_ ska_android_map_button(int32_t android_button_bit) {
 	return 0;
 }
 
+// IME-made events can set a modifier with neither side bit, so those report left.
 static uint16_t ska_android_get_modifiers(int32_t meta_state) {
+	static const struct { int32_t on, left, right; uint16_t lmod, rmod; } map[] = {
+		{ AMETA_SHIFT_ON, AMETA_SHIFT_LEFT_ON, AMETA_SHIFT_RIGHT_ON, ska_keymod_lshift, ska_keymod_rshift },
+		{ AMETA_CTRL_ON,  AMETA_CTRL_LEFT_ON,  AMETA_CTRL_RIGHT_ON,  ska_keymod_lctrl,  ska_keymod_rctrl  },
+		{ AMETA_ALT_ON,   AMETA_ALT_LEFT_ON,   AMETA_ALT_RIGHT_ON,   ska_keymod_lalt,   ska_keymod_ralt   },
+		{ AMETA_META_ON,  AMETA_META_LEFT_ON,  AMETA_META_RIGHT_ON,  ska_keymod_lgui,   ska_keymod_rgui   },
+	};
 	uint16_t mods = 0;
-	if (meta_state & AMETA_SHIFT_ON) mods |= ska_keymod_shift;
-	if (meta_state & AMETA_CTRL_ON) mods |= ska_keymod_ctrl;
-	if (meta_state & AMETA_ALT_ON) mods |= ska_keymod_alt;
-	if (meta_state & AMETA_META_ON) mods |= ska_keymod_gui;
+	for (int32_t i = 0; i < (int32_t)(sizeof(map) / sizeof(map[0])); i++) {
+		if (!(meta_state & map[i].on)) continue;
+		if (meta_state & map[i].right) mods |= map[i].rmod;
+		if ((meta_state & map[i].left) || !(meta_state & map[i].right)) mods |= map[i].lmod;
+	}
 	return mods;
 }
 
@@ -1527,10 +1535,7 @@ static void ska_android_vblank_report(uint64_t frame_time_ns) {
 static void ska_android_vblank_enable(bool enable) {
 	g_android_vblank_wanted = enable;
 	if (!enable || g_android_vblank_posted) return;
-	if (!ALooper_forThread()) {
-		ska_log(ska_log_warn, "ska_android_on_window_created called off a looper thread, so ska_window_get_vblank_ns reads 0");
-		return;
-	}
+	if (!ALooper_forThread()) return; // No vblank then, as documented on ska_window_get_vblank_ns
 	g_android_vblank_posted = true;
 	ska_android_vblank_post();
 }
@@ -2067,6 +2072,51 @@ bool ska_android_content_write(const char* uri_str, const void* data, size_t siz
 	}
 	fclose(file);
 	return true;
+}
+
+// ============================================================================
+// Common Paths
+// ============================================================================
+
+// Context folders are already per-app and always exist, so no app subfolder.
+bool ska_android_path_get(ska_path_ path, char* out_buffer, size_t buffer_size) {
+	JNIEnv* env = (JNIEnv*)ska_android_get_jni_env();
+	if (!env || !g_ska.android_context) {
+		ska_set_error("ska_path_get: Android context not available");
+		return false;
+	}
+
+	jobject     ctx    = (jobject)g_ska.android_context;
+	const char* getter = path == ska_path_data || path == ska_path_config ? "getFilesDir" : "getCacheDir";
+
+	jclass    ctx_class = (*env)->GetObjectClass(env, ctx);
+	jmethodID get_dir   = (*env)->GetMethodID(env, ctx_class, getter, "()Ljava/io/File;");
+	jobject   dir       = (*env)->CallObjectMethod(env, ctx, get_dir);
+	(*env)->DeleteLocalRef(env, ctx_class);
+	if (!dir || (*env)->ExceptionCheck(env)) {
+		if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+		ska_set_error("ska_path_get: Context.%s failed", getter);
+		return false;
+	}
+
+	jclass    file_class = (*env)->GetObjectClass(env, dir);
+	jmethodID get_path   = (*env)->GetMethodID(env, file_class, "getAbsolutePath", "()Ljava/lang/String;");
+	jstring   path_jstr  = (jstring)(*env)->CallObjectMethod(env, dir, get_path);
+	(*env)->DeleteLocalRef(env, file_class);
+	(*env)->DeleteLocalRef(env, dir);
+	if (!path_jstr) {
+		ska_set_error("ska_path_get: File.getAbsolutePath failed");
+		return false;
+	}
+
+	const char* utf8   = (*env)->GetStringUTFChars(env, path_jstr, NULL);
+	size_t      len    = utf8 ? strlen(utf8) : 0;
+	bool        result = utf8 && len < buffer_size;
+	if (result) memcpy(out_buffer, utf8, len + 1);
+	else        ska_set_error("ska_path_get: Buffer too small");
+	if (utf8) (*env)->ReleaseStringUTFChars(env, path_jstr, utf8);
+	(*env)->DeleteLocalRef(env, path_jstr);
+	return result;
 }
 
 // ============================================================================
@@ -2872,7 +2922,7 @@ static bool ska_kvpstore_jni_init(void) {
 }
 
 SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 	if (!data && size > 0) {
 		ska_set_error("ska_kvpstore_save: NULL data with non-zero size");
 		return false;
@@ -2894,7 +2944,7 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 	jobject activity = (jobject)g_ska.android_context;
 
 	// Get SharedPreferences
-	jstring prefs_name = (*env)->NewStringUTF(env, ska_kvpstore_get_app_name());
+	jstring prefs_name = (*env)->NewStringUTF(env, ska_app_name());
 	jobject prefs = (*env)->CallObjectMethod(env, activity,
 		g_kvp_jni.ctx_getSharedPreferences, prefs_name, 0 /* MODE_PRIVATE */);
 
@@ -2926,7 +2976,7 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 }
 
 SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 
 	if (!g_ska.android_context) {
 		ska_set_error("ska_kvpstore: android activity not available");
@@ -2944,7 +2994,7 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 	jobject activity = (jobject)g_ska.android_context;
 
 	// Get SharedPreferences
-	jstring prefs_name = (*env)->NewStringUTF(env, ska_kvpstore_get_app_name());
+	jstring prefs_name = (*env)->NewStringUTF(env, ska_app_name());
 	jobject prefs = (*env)->CallObjectMethod(env, activity,
 		g_kvp_jni.ctx_getSharedPreferences, prefs_name, 0);
 
@@ -2986,7 +3036,7 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 }
 
 SKA_API bool ska_kvpstore_delete(const char* key) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 
 	if (!g_ska.android_context) {
 		ska_set_error("ska_kvpstore: android activity not available");
@@ -3004,7 +3054,7 @@ SKA_API bool ska_kvpstore_delete(const char* key) {
 	jobject activity = (jobject)g_ska.android_context;
 
 	// Get SharedPreferences
-	jstring prefs_name = (*env)->NewStringUTF(env, ska_kvpstore_get_app_name());
+	jstring prefs_name = (*env)->NewStringUTF(env, ska_app_name());
 	jobject prefs = (*env)->CallObjectMethod(env, activity,
 		g_kvp_jni.ctx_getSharedPreferences, prefs_name, 0);
 

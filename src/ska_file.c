@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <direct.h>
+#include <shlobj.h>
 #define access _access
 #define F_OK 0
 #else
@@ -23,10 +24,14 @@
 #include <mach-o/dyld.h>
 #endif
 
-#include <limits.h>
-#ifndef PATH_MAX
-#define PATH_MAX 4096
+#if defined(SKA_PLATFORM_LINUX) || defined(SKA_PLATFORM_MACOS)
+#include <pwd.h>
 #endif
+
+#include <errno.h>
+#include <limits.h>
+// Not the platform PATH_MAX: MinGW's is 260, and MSVC has none
+#define SKA_PATH_MAX 4096
 
 // ============================================================================
 // File I/O Implementation
@@ -412,131 +417,356 @@ SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterat
 }
 
 // ============================================================================
-// Working Directory
+// Common Paths
 // ============================================================================
 
-SKA_API bool ska_get_cwd(char* ref_buffer, size_t buffer_size) {
-	if (!ref_buffer || buffer_size == 0) {
-		ska_set_error("ska_get_cwd: Invalid buffer");
+#ifndef SKA_PLATFORM_ANDROID
+static bool ska_path_copy(const char* src, char* out_buffer, size_t buffer_size) {
+	size_t len = strlen(src);
+	if (len >= buffer_size) {
+		ska_set_error("ska_path_get: Buffer too small");
 		return false;
 	}
-
-	ref_buffer[0] = '\0';
+	memcpy(out_buffer, src, len + 1);
+	return true;
+}
+#endif
 
 #ifdef SKA_PLATFORM_WIN32
-	// Use _wgetcwd for Unicode support, then convert to UTF-8
-	wchar_t* wcwd = _wgetcwd(NULL, 0);
-	if (wcwd == NULL) {
-		ska_set_error("ska_get_cwd: _wgetcwd failed");
+#define SKA_PATH_SEP "\\"
+
+static bool ska_path_from_wide(const wchar_t* wpath, char* out_buffer, size_t buffer_size) {
+	char* utf8 = ska_wide_to_utf8(wpath);
+	if (!utf8) {
+		ska_set_error("ska_path_get: Failed to convert path to UTF-8");
 		return false;
 	}
-	char* utf8_cwd = ska_wide_to_utf8(wcwd);
-	free(wcwd);  // _wgetcwd uses malloc internally
-	if (!utf8_cwd) {
-		ska_set_error("ska_get_cwd: Failed to convert path to UTF-8");
-		return false;
-	}
-	size_t len = strlen(utf8_cwd);
-	if (len >= buffer_size) {
-		ska_free(utf8_cwd);
-		ska_set_error("ska_get_cwd: Buffer too small");
-		return false;
-	}
-	memcpy(ref_buffer, utf8_cwd, len + 1);
-	ska_free(utf8_cwd);
+	bool result = ska_path_copy(utf8, out_buffer, buffer_size);
+	ska_free(utf8);
+	return result;
+}
 #else
-	if (getcwd(ref_buffer, buffer_size) == NULL) {
-		ska_set_error("ska_get_cwd: getcwd failed");
-		return false;
-	}
+#define SKA_PATH_SEP "/"
 #endif
 
+static bool ska_path_cwd_get(char* out_buffer, size_t buffer_size) {
+#ifdef SKA_PLATFORM_WIN32
+	wchar_t* wcwd = _wgetcwd(NULL, 0);
+	if (!wcwd) {
+		ska_set_error("ska_path_get: _wgetcwd failed");
+		return false;
+	}
+	bool result = ska_path_from_wide(wcwd, out_buffer, buffer_size);
+	free(wcwd); // _wgetcwd allocates with malloc, not ska_malloc
+	return result;
+#else
+	if (!getcwd(out_buffer, buffer_size)) {
+		ska_set_error("ska_path_get: getcwd failed");
+		return false;
+	}
+	return true;
+#endif
+}
+
+static bool ska_exe_file_get(char* out_buffer, size_t buffer_size) {
+#if defined(SKA_PLATFORM_WIN32)
+	// Long path aware installs can pass MAX_PATH. A full buffer means truncation.
+	const DWORD capacity = 32768;
+	wchar_t*    wpath    = (wchar_t*)ska_malloc(capacity * sizeof(wchar_t));
+	DWORD       len      = GetModuleFileNameW(NULL, wpath, capacity);
+	bool        result   = len > 0 && len < capacity;
+	if (!result) ska_set_error("ska_path_get: GetModuleFileNameW failed");
+	else         result = ska_path_from_wide(wpath, out_buffer, buffer_size);
+	ska_free(wpath);
+	if (!result) return false;
+#elif defined(SKA_PLATFORM_LINUX)
+	// A result that fills the buffer may have been truncated
+	ssize_t len = readlink("/proc/self/exe", out_buffer, buffer_size - 1);
+	if (len < 0 || (size_t)len >= buffer_size - 1) {
+		ska_set_error("ska_path_get: readlink failed");
+		return false;
+	}
+	out_buffer[len] = '\0';
+#elif defined(SKA_PLATFORM_MACOS)
+	// May be relative to the launch folder, which breaks once the cwd changes
+	char     raw [SKA_PATH_MAX];
+	char     real[SKA_PATH_MAX];
+	uint32_t size = sizeof(raw);
+	if (_NSGetExecutablePath(raw, &size) != 0 || !realpath(raw, real)) {
+		ska_set_error("ska_path_get: _NSGetExecutablePath failed");
+		return false;
+	}
+	if (!ska_path_copy(real, out_buffer, buffer_size)) return false;
+#else
+	ska_set_error("ska_path_get: No executable folder on this platform");
+	return false;
+#endif
 	return true;
 }
 
-#ifndef SKA_PLATFORM_ANDROID
-// Helper: Get directory portion of a path (modifies buffer in-place)
-static void ska_path_get_directory(char* path) {
-	if (!path || path[0] == '\0') return;
+static bool ska_path_exe_get(char* out_buffer, size_t buffer_size) {
+	if (!ska_exe_file_get(out_buffer, buffer_size)) return false;
 
-	// Find last separator
-	char* last_sep = NULL;
-	for (char* p = path; *p; p++) {
-		if (*p == '/' || *p == '\\') {
-			last_sep = p;
-		}
-	}
-
-	if (last_sep) {
-		*last_sep = '\0';
-	} else {
-		// No separator found, use current directory
-		path[0] = '.';
-		path[1] = '\0';
-	}
+	char* last_sep = strrchr(out_buffer, SKA_PATH_SEP[0]);
+	if (last_sep) *last_sep = '\0';
+	return true;
 }
+
+bool ska_exe_name_get(char* out_buffer, size_t buffer_size) {
+#if defined(SKA_PLATFORM_ANDROID) || defined(SKA_PLATFORM_WEB)
+	return false;
+#else
+	char path[SKA_PATH_MAX];
+	if (!ska_exe_file_get(path, sizeof(path))) return false;
+
+	char* last_sep = strrchr(path, SKA_PATH_SEP[0]);
+	char* name     = last_sep ? last_sep + 1 : path;
+#ifdef SKA_PLATFORM_WIN32
+	char* ext = strrchr(name, '.');
+	if (ext) *ext = '\0';
+#endif
+	return ska_path_copy(name, out_buffer, buffer_size);
+#endif
+}
+
+// Android resolves everything below through its Context instead
+#ifndef SKA_PLATFORM_ANDROID
+
+static bool ska_path_join(const char* a, const char* b, char* out_buffer, size_t buffer_size) {
+	int32_t len = snprintf(out_buffer, buffer_size, "%s" SKA_PATH_SEP "%s", a, b);
+	if (len < 0 || (size_t)len >= buffer_size) {
+		ska_set_error("ska_path_get: Buffer too small");
+		return false;
+	}
+	return true;
+}
+
+// Strips trailing separators, keeping a root like "/" or "C:\".
+static void ska_path_trim(char* ref_path) {
+	size_t len  = strlen(ref_path);
+	size_t root = len >= 3 && ref_path[1] == ':' ? 3 : 1;
+	while (len > root && (ref_path[len - 1] == '/' || ref_path[len - 1] == '\\'))
+		ref_path[--len] = '\0';
+}
+
+static bool ska_dir_make_one(const char* path) {
+#ifdef SKA_PLATFORM_WIN32
+	wchar_t* wpath = ska_utf8_to_wide(path);
+	if (!wpath) return false;
+	int32_t result = _wmkdir(wpath);
+	ska_free(wpath);
+	return result == 0 || errno == EEXIST;
+#else
+	return mkdir(path, 0755) == 0 || errno == EEXIST;
+#endif
+}
+
+// Creates a folder and any missing parents. Parents like "C:" or "/home" fail
+// harmlessly, so only the final folder's result counts.
+static bool ska_dir_make(char* ref_path) {
+	for (char* p = ref_path + 1; *p; p++) {
+		if (*p != '/' && *p != '\\') continue;
+		char sep = *p;
+		*p = '\0';
+		ska_dir_make_one(ref_path);
+		*p = sep;
+	}
+	return ska_dir_make_one(ref_path);
+}
+
+#ifdef SKA_PLATFORM_WIN32
+static bool ska_path_shell(int32_t csidl, char* out_buffer, size_t buffer_size) {
+	wchar_t wpath[MAX_PATH];
+	if (FAILED(SHGetFolderPathW(NULL, csidl | CSIDL_FLAG_CREATE, NULL, SHGFP_TYPE_CURRENT, wpath))) {
+		ska_set_error("ska_path_get: SHGetFolderPathW failed");
+		return false;
+	}
+	return ska_path_from_wide(wpath, out_buffer, buffer_size);
+}
+#endif
+
+#if defined(SKA_PLATFORM_LINUX) || defined(SKA_PLATFORM_MACOS)
+// Sets an error when there is no home folder.
+static const char* ska_home_dir(void) {
+	const char* home = getenv("HOME");
+	if (!home || home[0] == '\0') {
+		struct passwd* pw = getpwuid(getuid());
+		home = pw ? pw->pw_dir : NULL;
+	}
+	if (!home) ska_set_error("ska_path_get: Unable to find the home folder");
+	return home;
+}
+
+static bool ska_path_home_join(const char* rel, char* out_buffer, size_t buffer_size) {
+	const char* home = ska_home_dir();
+	return home && ska_path_join(home, rel, out_buffer, buffer_size);
+}
+#endif
+
+#ifdef SKA_PLATFORM_LINUX
+// The XDG spec says relative values are invalid and should be ignored.
+static bool ska_path_xdg(const char* env, const char* home_rel, char* out_buffer, size_t buffer_size) {
+	const char* xdg = getenv(env);
+	if (xdg && xdg[0] == '/') return ska_path_copy(xdg, out_buffer, buffer_size);
+	return ska_path_home_join(home_rel, out_buffer, buffer_size);
+}
+
+// Finds a KEY="value" line in user-dirs.dirs text, terminating the value in place.
+static const char* ska_path_user_dirs_find(char* ref_text, const char* key) {
+	size_t key_len = strlen(key);
+	for (char* line = ref_text; line; ) {
+		char* next = strchr(line, '\n');
+		if (next) *next++ = '\0';
+		if (strncmp(line, key, key_len) == 0 && strncmp(line + key_len, "=\"", 2) == 0) {
+			char* value = line + key_len + 2;
+			char* end   = strchr(value, '"');
+			if (end) *end = '\0';
+			return value;
+		}
+		line = next;
+	}
+	return NULL;
+}
+
+// XDG user folders are set in user-dirs.dirs, as "$HOME/..." or absolute paths.
+static bool ska_path_xdg_user(const char* key, const char* home_rel, char* out_buffer, size_t buffer_size) {
+	char       dirs_path[SKA_PATH_MAX];
+	char*      text     = NULL;
+	const char suffix[] = "/user-dirs.dirs";
+	if (ska_path_xdg("XDG_CONFIG_HOME", ".config", dirs_path, sizeof(dirs_path) - sizeof(suffix))) {
+		strcat(dirs_path, suffix);
+		if (ska_file_exists(dirs_path)) ska_file_read_text(dirs_path, &text);
+	}
+
+	const char* value = text ? ska_path_user_dirs_find(text, key) : NULL;
+	bool        result;
+	// A bare "$HOME" means the folder is disabled and resolves to home
+	if      (value && strcmp (value, "$HOME")     == 0) result = ska_path_home_join("",        out_buffer, buffer_size);
+	else if (value && strncmp(value, "$HOME/", 6) == 0) result = ska_path_home_join(value + 6, out_buffer, buffer_size);
+	else if (value && value[0] == '/')                  result = ska_path_copy     (value,     out_buffer, buffer_size);
+	else                                                result = ska_path_home_join(home_rel,  out_buffer, buffer_size);
+	ska_file_free_data(text);
+	return result;
+}
+#endif
+
+// Shared per-user folders, which belong to the user rather than the app.
+static bool ska_path_user_get(ska_path_ path, char* out_buffer, size_t buffer_size) {
+#if defined(SKA_PLATFORM_WIN32)
+	if (!ska_path_shell(path == ska_path_home ? CSIDL_PROFILE : CSIDL_PERSONAL, out_buffer, buffer_size)) return false;
+#elif defined(SKA_PLATFORM_LINUX) || defined(SKA_PLATFORM_MACOS)
+	if (path == ska_path_home) {
+		const char* home = ska_home_dir();
+		if (!home || !ska_path_copy(home, out_buffer, buffer_size)) return false;
+	} else {
+#ifdef SKA_PLATFORM_LINUX
+		if (!ska_path_xdg_user("XDG_DOCUMENTS_DIR", "Documents", out_buffer, buffer_size)) return false;
+#else
+		if (!ska_path_home_join("Documents", out_buffer, buffer_size)) return false;
+#endif
+	}
+#else
+	ska_set_error("ska_path_get: No user folders on this platform");
+	return false;
+#endif
+	ska_path_trim(out_buffer);
+	return true;
+}
+
+// Per-user folder that the per-app folders live in.
+static bool ska_path_app_root(ska_path_ path, char* out_buffer, size_t buffer_size) {
+#if defined(SKA_PLATFORM_WIN32)
+	return ska_path_shell(path == ska_path_cache ? CSIDL_LOCAL_APPDATA : CSIDL_APPDATA, out_buffer, buffer_size);
+#elif defined(SKA_PLATFORM_LINUX)
+	switch (path) {
+	case ska_path_data:   return ska_path_xdg("XDG_DATA_HOME",   ".local/share", out_buffer, buffer_size);
+	case ska_path_config: return ska_path_xdg("XDG_CONFIG_HOME", ".config",      out_buffer, buffer_size);
+	default:              return ska_path_xdg("XDG_CACHE_HOME",  ".cache",       out_buffer, buffer_size);
+	}
+#elif defined(SKA_PLATFORM_MACOS)
+	const char* rel = path == ska_path_cache ? "Library/Caches" : "Library/Application Support";
+	return ska_path_home_join(rel, out_buffer, buffer_size);
+#elif defined(SKA_PLATFORM_WEB)
+	// MEMFS is wiped on reload, which only a cache can tolerate
+	if (path != ska_path_cache) {
+		ska_set_error("ska_path_get: No persistent file system on the web");
+		return false;
+	}
+	return ska_path_copy("/tmp", out_buffer, buffer_size);
+#else
+	ska_set_error("ska_path_get: Not supported on this platform");
+	return false;
+#endif
+}
+
+static bool ska_path_app_get(ska_path_ path, char* out_buffer, size_t buffer_size) {
+	char root[SKA_PATH_MAX];
+	if (!ska_path_app_root(path, root, sizeof(root))) return false;
+	ska_path_trim(root);
+
+	if (!ska_path_join(root, ska_app_name(), out_buffer, buffer_size)) return false;
+	if (!ska_dir_make(out_buffer)) {
+		ska_set_error("ska_path_get: Failed to create '%s'", out_buffer);
+		return false;
+	}
+	return true;
+}
+
+static bool ska_path_temp_get(char* out_buffer, size_t buffer_size) {
+#ifdef SKA_PLATFORM_WIN32
+	wchar_t wpath[MAX_PATH + 1];
+	DWORD   len = GetTempPathW(MAX_PATH + 1, wpath);
+	if (len == 0 || len > MAX_PATH) {
+		ska_set_error("ska_path_get: GetTempPathW failed");
+		return false;
+	}
+	if (!ska_path_from_wide(wpath, out_buffer, buffer_size)) return false;
+#else
+	const char* tmp = getenv("TMPDIR");
+	if (!ska_path_copy(tmp && tmp[0] == '/' ? tmp : "/tmp", out_buffer, buffer_size)) return false;
+#endif
+	ska_path_trim(out_buffer);
+	return true;
+}
+
 #endif // !SKA_PLATFORM_ANDROID
 
-SKA_API bool ska_get_exe_path(char* ref_buffer, size_t buffer_size) {
-	if (!ref_buffer || buffer_size == 0) {
-		ska_set_error("ska_get_exe_path: Invalid buffer");
+SKA_API bool ska_path_get(ska_path_ path, char* out_buffer, size_t buffer_size) {
+	if (buffer_size == 0) {
+		ska_set_error("ska_path_get: Empty buffer");
+		return false;
+	}
+	bool per_app = path == ska_path_data || path == ska_path_config || path == ska_path_cache;
+	if (per_app && !g_ska.initialized) {
+		ska_set_error("ska_path_get: Per-app folders require ska_init, which sets the app_id they are named by");
+		out_buffer[0] = '\0';
 		return false;
 	}
 
-	ref_buffer[0] = '\0';
-
-#if defined(SKA_PLATFORM_WIN32)
-	// Use GetModuleFileNameW for Unicode support, then convert to UTF-8
-	wchar_t wpath[MAX_PATH];
-	DWORD len = GetModuleFileNameW(NULL, wpath, MAX_PATH);
-	if (len == 0 || len >= MAX_PATH) {
-		ska_set_error("ska_get_exe_path: GetModuleFileNameW failed");
-		return false;
-	}
-	char* utf8_path = ska_wide_to_utf8(wpath);
-	if (!utf8_path) {
-		ska_set_error("ska_get_exe_path: Failed to convert path to UTF-8");
-		return false;
-	}
-	size_t utf8_len = strlen(utf8_path);
-	if (utf8_len >= buffer_size) {
-		ska_free(utf8_path);
-		ska_set_error("ska_get_exe_path: Buffer too small");
-		return false;
-	}
-	memcpy(ref_buffer, utf8_path, utf8_len + 1);
-	ska_free(utf8_path);
-	return true;
-
-#elif defined(SKA_PLATFORM_LINUX)
-	ssize_t len = readlink("/proc/self/exe", ref_buffer, buffer_size - 1);
-	if (len < 0 || (size_t)len >= buffer_size) {
-		ska_set_error("ska_get_exe_path: readlink failed");
-		return false;
-	}
-	ref_buffer[len] = '\0';
-	return true;
-
-#elif defined(SKA_PLATFORM_MACOS)
-	uint32_t size = (uint32_t)buffer_size;
-	if (_NSGetExecutablePath(ref_buffer, &size) != 0) {
-		ska_set_error("ska_get_exe_path: _NSGetExecutablePath failed");
-		return false;
-	}
-	return true;
-
-#elif defined(SKA_PLATFORM_ANDROID)
-	ska_set_error("ska_get_exe_path: Not supported on Android");
-	return false;
-
-#elif defined(SKA_PLATFORM_WEB)
-	ska_set_error("ska_get_exe_path: Not supported on the web");
-	return false;
-
+	bool result = false;
+	switch (path) {
+	case ska_path_cwd:    result = ska_path_cwd_get(out_buffer, buffer_size); break;
+	case ska_path_exe:    result = ska_path_exe_get(out_buffer, buffer_size); break;
+#ifdef SKA_PLATFORM_ANDROID
+	case ska_path_data:
+	case ska_path_config:
+	case ska_path_cache:
+	case ska_path_temp:   result = ska_android_path_get(path, out_buffer, buffer_size); break;
+	case ska_path_home:
+	case ska_path_documents: ska_set_error("ska_path_get: No user folders on Android"); break;
 #else
-	ska_set_error("ska_get_exe_path: Not supported on this platform");
-	return false;
+	case ska_path_data:
+	case ska_path_config:
+	case ska_path_cache:  result = ska_path_app_get (path, out_buffer, buffer_size); break;
+	case ska_path_temp:   result = ska_path_temp_get(      out_buffer, buffer_size); break;
+	case ska_path_home:
+	case ska_path_documents: result = ska_path_user_get(path, out_buffer, buffer_size); break;
 #endif
+	default: ska_set_error("ska_path_get: Unknown path %d", (int32_t)path); break;
+	}
+
+	if (!result) out_buffer[0] = '\0';
+	return result;
 }
 
 SKA_API bool ska_set_cwd(const char* opt_path) {
@@ -545,15 +775,10 @@ SKA_API bool ska_set_cwd(const char* opt_path) {
 	return false;
 #else
 
-	char path_buffer[PATH_MAX];
+	char path_buffer[SKA_PATH_MAX];
 
 	if (opt_path == NULL) {
-		// Get executable directory
-		if (!ska_get_exe_path(path_buffer, sizeof(path_buffer))) {
-			ska_set_error("ska_set_cwd: ska_get_exe_path failed");
-			return false;
-		}
-		ska_path_get_directory(path_buffer);
+		if (!ska_path_get(ska_path_exe, path_buffer, sizeof(path_buffer))) return false;
 		opt_path = path_buffer;
 	}
 

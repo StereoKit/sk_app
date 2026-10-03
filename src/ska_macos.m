@@ -131,13 +131,27 @@ static ska_window_t* ska_find_window_by_nswindow(NSWindow* nswindow) {
 	return NULL;
 }
 
-static uint16_t ska_macos_get_modifiers(NSEventModifierFlags flags) {
-	uint16_t mods = 0;
-	if (flags & NSEventModifierFlagShift) mods |= ska_keymod_shift;
-	if (flags & NSEventModifierFlagControl) mods |= ska_keymod_ctrl;
-	if (flags & NSEventModifierFlagOption) mods |= ska_keymod_alt;
-	if (flags & NSEventModifierFlagCommand) mods |= ska_keymod_gui;
-	return mods;
+// Modifiers held as focus arrives sent their FlagsChanged elsewhere. The
+// device-dependent bits tell left from right, as in the FlagsChanged handler.
+static void ska_macos_press_held(ska_window_id_t window_id) {
+	static const struct { NSEventModifierFlags mask; ska_scancode_ scancode; } map[] = {
+		{ NX_DEVICELCTLKEYMASK,   ska_scancode_lctrl  },
+		{ NX_DEVICELSHIFTKEYMASK, ska_scancode_lshift },
+		{ NX_DEVICELALTKEYMASK,   ska_scancode_lalt   },
+		{ NX_DEVICELCMDKEYMASK,   ska_scancode_lgui   },
+		{ NX_DEVICERCTLKEYMASK,   ska_scancode_rctrl  },
+		{ NX_DEVICERSHIFTKEYMASK, ska_scancode_rshift },
+		{ NX_DEVICERALTKEYMASK,   ska_scancode_ralt   },
+		{ NX_DEVICERCMDKEYMASK,   ska_scancode_rgui   },
+	};
+	NSEventModifierFlags flags = [NSEvent modifierFlags];
+
+	ska_scancode_ held[sizeof(map) / sizeof(map[0])];
+	int32_t       count = 0;
+	for (int32_t i = 0; i < (int32_t)(sizeof(map) / sizeof(map[0])); i++) {
+		if (flags & map[i].mask) held[count++] = map[i].scancode;
+	}
+	ska_input_press_held(window_id, held, count);
 }
 
 /* Points the window's display link at the screen the window is on, so the
@@ -263,6 +277,7 @@ static void ska_macos_display_link_follow(ska_window_t* window) {
 	event.window.window_id = self.window->id;
 	self.window->has_focus = true;
 	ska_post_event(&event);
+	ska_macos_press_held(self.window->id);
 }
 
 - (void)windowDidResignKey:(NSNotification*)notification {
@@ -830,9 +845,9 @@ void ska_platform_pump_events(void) {
 					event.keyboard.pressed   = pressed;
 					event.keyboard.repeat    = false;
 					event.keyboard.scancode  = scancode;
-					event.keyboard.modifiers = ska_macos_get_modifiers(flags);
 
 					g_ska.input_state.keyboard[scancode] = pressed ? 1 : 0;
+					event.keyboard.modifiers        = ska_input_state_derive_modifiers(&g_ska.input_state);
 					g_ska.input_state.key_modifiers = event.keyboard.modifiers;
 
 					ska_post_event(&event);
@@ -850,12 +865,12 @@ void ska_platform_pump_events(void) {
 						event.keyboard.pressed = pressed;
 						event.keyboard.repeat = nsevent.isARepeat;
 						event.keyboard.scancode = ska_macos_scancode_table[keycode];
-						event.keyboard.modifiers = ska_macos_get_modifiers(nsevent.modifierFlags);
 
 						/* Update input state */
 						if (event.keyboard.scancode != ska_scancode_unknown) {
 							g_ska.input_state.keyboard[event.keyboard.scancode] = pressed ? 1 : 0;
 						}
+						event.keyboard.modifiers        = ska_input_state_derive_modifiers(&g_ska.input_state);
 						g_ska.input_state.key_modifiers = event.keyboard.modifiers;
 
 						ska_post_event(&event);
@@ -1354,16 +1369,16 @@ static void ska_macos_check_file_dialog(void) {
    ============================================================================ */
 
 SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 	if (!data && size > 0) {
 		ska_set_error("ska_kvpstore_save: NULL data with non-zero size");
 		return false;
 	}
 
 	@autoreleasepool {
-		/* Build namespaced key: <app_name>.<key> */
+		/* Build namespaced key: <app_id>.<key> */
 		NSString* full_key = [NSString stringWithFormat:@"%s.%s",
-			ska_kvpstore_get_app_name(), key];
+			ska_app_name(), key];
 
 		/* Wrap data in NSData */
 		NSData* ns_data = [NSData dataWithBytes:data length:size];
@@ -1377,11 +1392,11 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 }
 
 SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 
 	@autoreleasepool {
 		NSString* full_key = [NSString stringWithFormat:@"%s.%s",
-			ska_kvpstore_get_app_name(), key];
+			ska_app_name(), key];
 
 		NSData* ns_data = [[NSUserDefaults standardUserDefaults] dataForKey:full_key];
 
@@ -1406,11 +1421,11 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 }
 
 SKA_API bool ska_kvpstore_delete(const char* key) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 
 	@autoreleasepool {
 		NSString* full_key = [NSString stringWithFormat:@"%s.%s",
-			ska_kvpstore_get_app_name(), key];
+			ska_app_name(), key];
 
 		[[NSUserDefaults standardUserDefaults] removeObjectForKey:full_key];
 		[[NSUserDefaults standardUserDefaults] synchronize];

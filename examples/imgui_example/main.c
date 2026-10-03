@@ -49,9 +49,6 @@ int32_t main(int argc, char** argv) {
 
 	printf("[INIT] sk_app initialized\n");
 
-	// Set up persistent storage
-	ska_kvpstore_set_app_name("imgui_example");
-
 	// Try to load saved window geometry
 	int32_t win_x = SKA_WINDOWPOS_CENTERED;
 	int32_t win_y = SKA_WINDOWPOS_CENTERED;

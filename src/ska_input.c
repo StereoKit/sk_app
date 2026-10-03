@@ -31,9 +31,13 @@ void ska_input_add_relative(int32_t xrel, int32_t yrel) {
 
 uint16_t ska_input_state_derive_modifiers(const ska_input_state_t* state) {
 	uint16_t mods = 0;
-	if (state->keyboard[ska_scancode_lshift] || state->keyboard[ska_scancode_rshift]) mods |= ska_keymod_shift;
-	if (state->keyboard[ska_scancode_lctrl]  || state->keyboard[ska_scancode_rctrl])  mods |= ska_keymod_ctrl;
-	if (state->keyboard[ska_scancode_lalt]   || state->keyboard[ska_scancode_ralt])   mods |= ska_keymod_alt;
-	if (state->keyboard[ska_scancode_lgui]   || state->keyboard[ska_scancode_rgui])   mods |= ska_keymod_gui;
+	if (state->keyboard[ska_scancode_lshift]) mods |= ska_keymod_lshift;
+	if (state->keyboard[ska_scancode_rshift]) mods |= ska_keymod_rshift;
+	if (state->keyboard[ska_scancode_lctrl])  mods |= ska_keymod_lctrl;
+	if (state->keyboard[ska_scancode_rctrl])  mods |= ska_keymod_rctrl;
+	if (state->keyboard[ska_scancode_lalt])   mods |= ska_keymod_lalt;
+	if (state->keyboard[ska_scancode_ralt])   mods |= ska_keymod_ralt;
+	if (state->keyboard[ska_scancode_lgui])   mods |= ska_keymod_lgui;
+	if (state->keyboard[ska_scancode_rgui])   mods |= ska_keymod_rgui;
 	return mods;
 }

@@ -160,15 +160,46 @@ static ska_window_t* ska_find_window_by_hwnd(HWND hwnd) {
 	return NULL;
 }
 
-static uint16_t ska_win32_get_modifiers(void) {
-	uint16_t mods = 0;
-	if (GetKeyState(VK_SHIFT) & 0x8000) mods |= ska_keymod_shift;
-	if (GetKeyState(VK_CONTROL) & 0x8000) mods |= ska_keymod_ctrl;
-	if (GetKeyState(VK_MENU) & 0x8000) mods |= ska_keymod_alt;
-	if ((GetKeyState(VK_LWIN) & 0x8000) || (GetKeyState(VK_RWIN) & 0x8000)) {
-		mods |= ska_keymod_gui;
+// With both shifts held, releasing one sends no WM_KEYUP until the other is
+// released too, so the tracked state is checked against Windows after a pump.
+static void ska_win32_unstick_shift(void) {
+	static const struct { UINT vk; ska_scancode_ scancode; } shifts[] = {
+		{ VK_LSHIFT, ska_scancode_lshift },
+		{ VK_RSHIFT, ska_scancode_rshift },
+	};
+	ska_input_state_t* input = &g_ska.input_state;
+	for (int32_t i = 0; i < 2; i++) {
+		if (!input->keyboard[shifts[i].scancode] || (GetKeyState(shifts[i].vk) & 0x8000)) continue;
+
+		input->keyboard[shifts[i].scancode] = 0;
+		input->key_modifiers                = ska_input_state_derive_modifiers(input);
+
+		ska_window_id_t window_id = 0;
+		for (uint32_t w = 0; w < SKA_MAX_WINDOWS; w++) {
+			if (g_ska.windows[w] && g_ska.windows[w]->has_focus) window_id = g_ska.windows[w]->id;
+		}
+
+		ska_event_t event = {0};
+		event.type               = ska_event_key_up;
+		event.timestamp          = ska_time_get_elapsed_ms();
+		event.keyboard.window_id = window_id;
+		event.keyboard.scancode  = shifts[i].scancode;
+		event.keyboard.modifiers = input->key_modifiers;
+		ska_post_event(&event);
 	}
-	return mods;
+}
+
+// GetKeyState follows this thread's key messages, and held modifiers sent none
+// here yet, so this asks the physical keyboard instead.
+static void ska_win32_press_held(ska_window_id_t window_id) {
+	static const UINT vks[] = { VK_LCONTROL, VK_LSHIFT, VK_LMENU, VK_LWIN, VK_RCONTROL, VK_RSHIFT, VK_RMENU, VK_RWIN };
+
+	ska_scancode_ held[sizeof(vks) / sizeof(vks[0])];
+	int32_t       count = 0;
+	for (int32_t i = 0; i < (int32_t)(sizeof(vks) / sizeof(vks[0])); i++) {
+		if (GetAsyncKeyState(vks[i]) & 0x8000) held[count++] = ska_win32_scancode_table[vks[i]];
+	}
+	ska_input_press_held(window_id, held, count);
 }
 
 // Current cursor state (shared between ska_platform_set_cursor and WM_SETCURSOR handler)
@@ -304,6 +335,7 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 				event.window.window_id = window->id;
 				window->has_focus = true;
 				ska_post_event(&event);
+				ska_win32_press_held(window->id);
 			}
 			return 0;
 
@@ -322,7 +354,8 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 		case WM_SYSKEYUP: {
 			if (window) {
 				bool pressed = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
-				bool repeat = (lparam & 0x40000000) != 0;
+				// Bit 30 is the previous key state, which is always set on a key up
+				bool repeat = pressed && (lparam & 0x40000000) != 0;
 
 				// Distinguish between left and right modifier keys
 				UINT vk = (UINT)wparam;
@@ -342,12 +375,12 @@ static LRESULT CALLBACK ska_win32_window_proc(HWND hwnd, UINT msg, WPARAM wparam
 				event.keyboard.pressed = pressed;
 				event.keyboard.repeat = repeat;
 				event.keyboard.scancode = ska_win32_scancode_table[vk];
-				event.keyboard.modifiers = ska_win32_get_modifiers();
 
-				// Update input state
+				// Update keyboard state FIRST (before deriving modifiers)
 				if (event.keyboard.scancode != ska_scancode_unknown) {
 					g_ska.input_state.keyboard[event.keyboard.scancode] = pressed ? 1 : 0;
 				}
+				event.keyboard.modifiers        = ska_input_state_derive_modifiers(&g_ska.input_state);
 				g_ska.input_state.key_modifiers = event.keyboard.modifiers;
 
 				ska_post_event(&event);
@@ -1058,6 +1091,7 @@ void ska_platform_pump_events(void) {
 		TranslateMessage(&msg);
 		DispatchMessageW(&msg);
 	}
+	ska_win32_unstick_shift();
 
 	// Check for file dialog completion
 	ska_win32_check_file_dialog();
@@ -1476,18 +1510,18 @@ static void ska_win32_check_file_dialog(void) {
 }
 
 // ============================================================================
-// KVP Store (Windows: Registry HKEY_CURRENT_USER\Software\<app_name>)
+// KVP Store (Windows: Registry HKEY_CURRENT_USER\Software\<app_id>)
 // ============================================================================
 
 SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 	if (!data && size > 0) {
 		return false;
 	}
 
-	// Build registry path: Software\<app_name> (wide string for Unicode support)
+	// Build registry path: Software\<app_id> (wide string for Unicode support)
 	char reg_path[256];
-	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_kvpstore_get_app_name());
+	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_app_name());
 	wchar_t* wreg_path = ska_utf8_to_wide(reg_path);
 	if (!wreg_path) {
 		return false;
@@ -1531,11 +1565,11 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 }
 
 SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 
 	// Build registry path (wide string for Unicode support)
 	char reg_path[256];
-	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_kvpstore_get_app_name());
+	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_app_name());
 	wchar_t* wreg_path = ska_utf8_to_wide(reg_path);
 	if (!wreg_path) {
 		return false;
@@ -1593,11 +1627,11 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 }
 
 SKA_API bool ska_kvpstore_delete(const char* key) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 
 	// Build registry path (wide string for Unicode support)
 	char reg_path[256];
-	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_kvpstore_get_app_name());
+	snprintf(reg_path, sizeof(reg_path), "Software\\%s", ska_app_name());
 	wchar_t* wreg_path = ska_utf8_to_wide(reg_path);
 	if (!wreg_path) {
 		return false;

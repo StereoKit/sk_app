@@ -124,20 +124,59 @@ static void test_timing(void) {
 		"ns and s measurements differ significantly");
 }
 
+static bool test_path_dir_cb(void* context, const ska_dir_entry_t* entry) {
+	return false;
+}
+
 static void test_working_directory(void) {
 	ska_log(ska_log_info, "\n=== Working Directory Tests ===");
 
 	char cwd[1024];
 
 	// Test getting current working directory
-	bool got_cwd = ska_get_cwd(cwd, sizeof(cwd));
-	TEST_ASSERT("ska_get_cwd succeeds", got_cwd);
-	TEST_ASSERT_MSG("ska_get_cwd returns non-empty path",
+	bool got_cwd = ska_path_get(ska_path_cwd, cwd, sizeof(cwd));
+	TEST_ASSERT("ska_path_get(cwd) succeeds", got_cwd);
+	TEST_ASSERT_MSG("ska_path_get(cwd) returns non-empty path",
 		got_cwd && strlen(cwd) > 0, "empty path returned");
 
 	if (g_verbose && got_cwd) {
 		ska_log(ska_log_info, "  Current directory: %s", cwd);
 	}
+
+	// Folders this platform should resolve. Documents may legitimately not exist.
+	const struct { ska_path_ path; const char* name; bool must_exist; } paths[] = {
+		{ ska_path_cache,     "cache",     true  },
+		{ ska_path_temp,      "temp",      true  },
+#ifndef SKA_PLATFORM_WEB
+		{ ska_path_data,      "data",      true  },
+		{ ska_path_config,    "config",    true  },
+#endif
+#if !defined(SKA_PLATFORM_ANDROID) && !defined(SKA_PLATFORM_WEB)
+		{ ska_path_exe,       "exe",       true  },
+		{ ska_path_home,      "home",      true  },
+		{ ska_path_documents, "documents", false },
+#endif
+	};
+	for (int32_t i = 0; i < (int32_t)(sizeof(paths) / sizeof(paths[0])); i++) {
+		char buffer[1024];
+		char label [64];
+		bool got = ska_path_get(paths[i].path, buffer, sizeof(buffer));
+		snprintf(label, sizeof(label), "ska_path_get(%s) succeeds", paths[i].name);
+		TEST_ASSERT(label, got && buffer[0] != '\0');
+		if (paths[i].must_exist) {
+			snprintf(label, sizeof(label), "ska_path_get(%s) folder exists", paths[i].name);
+			TEST_ASSERT(label, got && ska_dir_iterate(buffer, NULL, test_path_dir_cb));
+		}
+		if (g_verbose && got) ska_log(ska_log_info, "  %-9s %s", paths[i].name, buffer);
+	}
+
+#if defined(SKA_PLATFORM_ANDROID) || defined(SKA_PLATFORM_WEB)
+	char none[256] = "x";
+	TEST_ASSERT("ska_path_get(home) is unavailable", !ska_path_get(ska_path_home, none, sizeof(none)) && none[0] == '\0');
+#endif
+
+	char tiny[2];
+	TEST_ASSERT("ska_path_get fails on a tiny buffer", !ska_path_get(ska_path_temp, tiny, sizeof(tiny)) && tiny[0] == '\0');
 
 	// Test with NULL path (set to executable directory)
 	bool set_cwd = ska_set_cwd(NULL);
@@ -258,9 +297,6 @@ static void test_directory_iteration(void) {
 
 static void test_kvpstore(void) {
 	ska_log(ska_log_info, "\n=== Key-Value Store Tests ===");
-
-	ska_kvpstore_set_app_name("ska_test_suite");
-	TEST_PASS("ska_kvpstore_set_app_name"); // No return value to check
 
 	// Test small data
 	uint8_t small_data[] = {0x01, 0x02, 0x03, 0x04};
@@ -920,6 +956,29 @@ static void test_dpi_contract(void) {
 // Interactive Demo (non-test mode)
 // ============================================================================
 
+// With -v, shows the input stream for checking modifier state across focus changes
+static void log_input_event(const ska_event_t* event) {
+	bool     is_key = event->type == ska_event_key_down || event->type == ska_event_key_up;
+	uint16_t mods   = is_key ? event->keyboard.modifiers : ska_keyboard_get_modifiers();
+	char     mod_text[5] = {
+		mods & ska_keymod_shift ? 'S' : '-',
+		mods & ska_keymod_ctrl  ? 'C' : '-',
+		mods & ska_keymod_alt   ? 'A' : '-',
+		mods & ska_keymod_gui   ? 'G' : '-',
+		'\0' };
+	switch (event->type) {
+	case ska_event_window_focus_gained: ska_log(ska_log_info, "[INPUT] focus gained  mods %s 0x%04x", mod_text, mods); break;
+	case ska_event_window_focus_lost:   ska_log(ska_log_info, "[INPUT] focus lost    mods %s 0x%04x", mod_text, mods); break;
+	case ska_event_key_down:
+	case ska_event_key_up:
+		if (event->keyboard.repeat) break;
+		ska_log(ska_log_info, "[INPUT] key %-4s %3d  mods %s 0x%04x", event->keyboard.pressed ? "down" : "up", (int32_t)event->keyboard.scancode, mod_text, mods);
+		break;
+	case ska_event_mouse_button_down: ska_log(ska_log_info, "[INPUT] click         mods %s 0x%04x", mod_text, mods); break;
+	default: break;
+	}
+}
+
 static bool demo_frame(void* user_data) {
 	ska_window_t* window  = (ska_window_t*)user_data;
 	bool          running = true;
@@ -934,6 +993,7 @@ static bool demo_frame(void* user_data) {
 
 	ska_event_t event;
 	while (ska_event_poll(&event)) {
+		if (g_verbose) log_input_event(&event);
 		switch (event.type) {
 			case ska_event_quit:
 			case ska_event_window_close:
@@ -1081,6 +1141,12 @@ int32_t main(int32_t argc, char** argv) {
 
 	// Run pre-init tests
 	test_version();
+
+	// Storage is named by app_id, which only ska_init settles
+	char    pre_init_path[256];
+	uint8_t pre_init_data = 1;
+	TEST_ASSERT("ska_kvpstore_save fails before ska_init",     !ska_kvpstore_save("pre_init", &pre_init_data, 1));
+	TEST_ASSERT("ska_path_get(data) fails before ska_init",    !ska_path_get(ska_path_data, pre_init_path, sizeof(pre_init_path)));
 
 	// Initialize
 	ska_log(ska_log_info, "\n=== Initialization ===");

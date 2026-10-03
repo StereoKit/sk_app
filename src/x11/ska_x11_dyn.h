@@ -89,6 +89,7 @@ void ska_x11_dyn_unload(void);
 #define XGetWindowProperty           ska_dyn_XGetWindowProperty
 #define XIconifyWindow               ska_dyn_XIconifyWindow
 #define XInternAtom                  ska_dyn_XInternAtom
+#define XkbKeycodeToKeysym           ska_dyn_XkbKeycodeToKeysym
 #define XkbSetDetectableAutoRepeat   ska_dyn_XkbSetDetectableAutoRepeat
 #define XLookupKeysym                ska_dyn_XLookupKeysym
 #define XMapWindow                   ska_dyn_XMapWindow
@@ -97,6 +98,7 @@ void ska_x11_dyn_unload(void);
 #define XOpenDisplay                 ska_dyn_XOpenDisplay
 #define XOpenIM                      ska_dyn_XOpenIM
 #define XPending                     ska_dyn_XPending
+#define XQueryKeymap                 ska_dyn_XQueryKeymap
 #define XQueryPointer                ska_dyn_XQueryPointer
 #define XRaiseWindow                 ska_dyn_XRaiseWindow
 #define XResizeWindow                ska_dyn_XResizeWindow

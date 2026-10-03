@@ -30,9 +30,6 @@ static LARGE_INTEGER g_qpc_frequency;
 // Global state
 ska_state_t g_ska = {0};
 
-// KVP Store app name
-static char* g_kvpstore_app_name = NULL;
-
 // ============================================================================
 // Memory Allocation
 // ============================================================================
@@ -108,21 +105,15 @@ SKA_API const char* ska_error_get(void) {
 // KVP Store Common
 // ============================================================================
 
-SKA_API void ska_kvpstore_set_app_name(const char* app_name) {
-	if (g_kvpstore_app_name) {
-		ska_free(g_kvpstore_app_name);
-		g_kvpstore_app_name = NULL;
-	}
-	if (app_name && app_name[0] != '\0') {
-		g_kvpstore_app_name = ska_strdup(app_name);
-	}
+const char* ska_app_name(void) {
+	return g_ska.app_id ? g_ska.app_id : "sk_app";
 }
 
-const char* ska_kvpstore_get_app_name(void) {
-	return g_kvpstore_app_name ? g_kvpstore_app_name : "sk_app";
-}
-
-bool ska_kvpstore_validate_key(const char* key) {
+bool ska_kvpstore_check(const char* key) {
+	if (!g_ska.initialized) {
+		ska_set_error("ska_kvpstore: Requires ska_init, which sets the app_id it is named by");
+		return false;
+	}
 	if (!key || key[0] == '\0') {
 		ska_set_error("ska_kvpstore: key cannot be NULL or empty");
 		return false;
@@ -194,7 +185,11 @@ SKA_API bool ska_init(const ska_settings_t* opt_settings) {
 #endif
 	// Must land after the memset above, not before it
 	g_ska.external_frame_driver = opt_settings ? opt_settings->external_frame_driver : false;
-	g_ska.app_id = opt_settings && opt_settings->app_id ? ska_strdup(opt_settings->app_id) : NULL;
+
+	char        exe_name[256];
+	const char* app_id = opt_settings ? opt_settings->app_id : NULL;
+	if (!app_id && ska_exe_name_get(exe_name, sizeof(exe_name))) app_id = exe_name;
+	g_ska.app_id = app_id ? ska_strdup(app_id) : NULL;
 
 #ifdef SKA_PLATFORM_LINUX
 	// Requested preference only. ska_platform_init resolves it into the backend
@@ -230,12 +225,6 @@ SKA_API void ska_shutdown(void) {
 	}
 
 	ska_platform_shutdown();
-
-	// Cleanup KVP store
-	if (g_kvpstore_app_name) {
-		ska_free(g_kvpstore_app_name);
-		g_kvpstore_app_name = NULL;
-	}
 
 	if (g_ska.app_id) {
 		ska_free(g_ska.app_id);
@@ -581,6 +570,30 @@ void ska_input_release_all(ska_window_id_t window_id) {
 
 	// Also clears relative motion, and covers anything a full queue dropped
 	ska_input_state_reset(input);
+}
+
+void ska_input_press_held(ska_window_id_t window_id, const ska_scancode_* held, int32_t held_count) {
+	ska_input_state_t* input     = &g_ska.input_state;
+	uint32_t           timestamp = ska_time_get_elapsed_ms();
+
+	for (int32_t i = 0; i < held_count; i++) {
+		ska_scancode_ scancode = held[i];
+		if (scancode < ska_scancode_lctrl || scancode > ska_scancode_rgui) continue;
+		if (input->keyboard[scancode]) continue;
+
+		input->keyboard[scancode] = 1;
+		input->key_modifiers      = ska_input_state_derive_modifiers(input);
+
+		ska_event_t event = {0};
+		event.type                = ska_event_key_down;
+		event.timestamp           = timestamp;
+		event.keyboard.window_id  = window_id;
+		event.keyboard.pressed    = true;
+		event.keyboard.repeat     = false;
+		event.keyboard.scancode   = scancode;
+		event.keyboard.modifiers  = input->key_modifiers;
+		ska_event_queue_push(&g_ska.event_queue, &event);
+	}
 }
 
 void ska_post_event(const ska_event_t* event) {

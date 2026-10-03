@@ -95,7 +95,10 @@ typedef struct ska_settings_t {
 	// Stable application identifier, used where the OS matches windows to an
 	// application rather than showing text: the Wayland xdg app_id and the X11
 	// WM_CLASS, which are how a window finds its .desktop file and icon
-	// (StartupWMClass). NULL falls back to each window's title.
+	// (StartupWMClass). It also names per-app storage: ska_path_get folders and
+	// the kvpstore, so changing it leaves previously saved data behind. Should
+	// be filesystem-safe. NULL falls back to the executable's name, or "sk_app"
+	// on Android and web. Shipping apps should set this explicitly.
 	const char* app_id;
 } ska_settings_t;
 
@@ -586,7 +589,8 @@ typedef enum ska_scancode_ {
 	ska_scancode_count = 512
 } ska_scancode_;
 
-// Key modifiers
+// Key modifiers. Each side has its own bit, and the unsided values like
+// ska_keymod_shift cover both, so `mods & ska_keymod_shift` matches either.
 typedef enum ska_keymod_ {
 	ska_keymod_none   = 0x0000,
 	ska_keymod_lshift = 0x0001,
@@ -1218,13 +1222,45 @@ typedef bool (*ska_dir_iterate_fn)(void* context, const ska_dir_entry_t* entry);
 // @return true on success (including when callback stops iteration), false on failure
 SKA_API bool ska_dir_iterate(const char* path, void* opt_context, ska_dir_iterate_fn callback);
 
-// Get current working directory.
-// Writes the path to ref_buffer (null-terminated). On failure, ref_buffer[0] is set to '\0'.
+// Common folders for ska_path_get. Per-app folders are named with
+// ska_settings_t.app_id. Some folders don't exist on every platform, and
+// ska_path_get returns false with an empty buffer for those, so always check.
+typedef enum ska_path_ {
+	ska_path_cwd,       // Current working directory
+	ska_path_exe,       // Folder containing the executable. Unavailable on Android and web
+	ska_path_data,      // Per-user app data, kept until uninstall. Unavailable on web
+	ska_path_config,    // Per-user app settings. Same as ska_path_data except on Linux
+	ska_path_cache,     // Per-user app cache. The OS or user may clear it at any time
+	ska_path_temp,      // Temporary files, shared with other apps on desktop
+	ska_path_home,      // The user's home folder. Unavailable on Android and web
+	ska_path_documents, // The user's documents folder. Unavailable on Android and web
+} ska_path_;
+
+// Get the path of a common folder, without a trailing separator. Per-app
+// folders (data, config, cache) are created if they don't exist yet; shared
+// folders are not. Per-app folders fail before ska_init, since it sets app_id.
+// On failure, or when the folder is unavailable on this platform, returns
+// false and sets out_buffer[0] to '\0'.
 //
-// @param ref_buffer Buffer to receive the path (UTF-8)
+// Locations per platform:
+// - Linux:   data      $XDG_DATA_HOME/<app>   (~/.local/share/<app>)
+//            config    $XDG_CONFIG_HOME/<app> (~/.config/<app>)
+//            cache     $XDG_CACHE_HOME/<app>  (~/.cache/<app>)
+//            temp      $TMPDIR or /tmp
+//            home      $HOME
+//            documents XDG_DOCUMENTS_DIR from user-dirs.dirs (~/Documents)
+// - Windows: data, config %APPDATA%\<app>, cache %LOCALAPPDATA%\<app>, temp GetTempPath(),
+//            home %USERPROFILE%, documents the shell's Documents folder
+// - macOS:   data, config ~/Library/Application Support/<app>, cache ~/Library/Caches/<app>,
+//            temp $TMPDIR or /tmp, home $HOME, documents ~/Documents
+// - Android: data, config Context.getFilesDir(), cache, temp Context.getCacheDir()
+// - Web:     cache /tmp/<app>, temp /tmp. Both are in memory and cleared on reload
+//
+// @param path Which folder to get
+// @param out_buffer Buffer to receive the path (UTF-8)
 // @param buffer_size Size of buffer in bytes (should include space for null terminator)
-// @return true on success, false on failure (check ska_error_get())
-SKA_API bool ska_get_cwd(char* ref_buffer, size_t buffer_size);
+// @return true on success, false on failure or if unavailable (check ska_error_get())
+SKA_API bool ska_path_get(ska_path_ path, char* out_buffer, size_t buffer_size);
 
 // Set current working directory.
 // If path is NULL, sets the working directory to the executable's directory.
@@ -1234,31 +1270,19 @@ SKA_API bool ska_get_cwd(char* ref_buffer, size_t buffer_size);
 // @return true on success, false on failure (check ska_error_get())
 SKA_API bool ska_set_cwd(const char* opt_path);
 
-// Get the path to the current executable.
-// Writes the path to ref_buffer (null-terminated). On failure, ref_buffer[0] is set to '\0'.
-// On Android, this function always fails (APKs don't have a traditional executable path).
-//
-// @param ref_buffer Buffer to receive the path (UTF-8)
-// @param buffer_size Size of buffer in bytes (should include space for null terminator)
-// @return true on success, false on failure (check ska_error_get())
-SKA_API bool ska_get_exe_path(char* ref_buffer, size_t buffer_size);
-
 // ============================================================================
 // Key-Value Persistent Storage
 // ============================================================================
 
-// Set the application name used for storage paths. Must be called before using
-// other kvpstore functions. The name should be filesystem-safe (alphanumeric,
-// underscores, hyphens). Defaults to "sk_app" if not called.
+// Small persistent values, namespaced by ska_settings_t.app_id. These calls
+// fail before ska_init, since it sets app_id.
 //
 // Storage locations per platform:
-// - Linux: ~/.config/<app_name>/<key>
-// - Windows: Registry HKEY_CURRENT_USER\Software\<app_name>
-// - macOS: NSUserDefaults (keys prefixed with <app_name>.)
-// - Android: SharedPreferences file named <app_name>
-//
-// @param app_name Application name (UTF-8), copied internally
-SKA_API void ska_kvpstore_set_app_name(const char* app_name);
+// - Linux: ska_path_config folder, one file per key (~/.config/<app_id>/<key>)
+// - Windows: Registry HKEY_CURRENT_USER\Software\<app_id>
+// - macOS: NSUserDefaults (keys prefixed with <app_id>.)
+// - Android: SharedPreferences file named <app_id>
+// - Web: localStorage (keys prefixed with ska_<app_id>_)
 
 // Save data to persistent storage. Creates storage location as needed.
 // Maximum recommended size is 64KB per key.

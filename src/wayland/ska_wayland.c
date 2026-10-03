@@ -563,18 +563,6 @@ static ska_window_t* ska_wl_window_from_surface(struct wl_surface* surface) {
 // convention X11 uses.
 #define SKA_WL_XKB_KEYCODE(evdev) ((evdev) + 8)
 
-static uint16_t ska_wl_modifiers(void) {
-	struct xkb_state* state = ska_wl()->xkb_state;
-	if (!state) return ska_keymod_none;
-
-	uint16_t mods = ska_keymod_none;
-	if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0) mods |= ska_keymod_shift;
-	if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_CTRL,  XKB_STATE_MODS_EFFECTIVE) > 0) mods |= ska_keymod_ctrl;
-	if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_ALT,   XKB_STATE_MODS_EFFECTIVE) > 0) mods |= ska_keymod_alt;
-	if (xkb_state_mod_name_is_active(state, XKB_MOD_NAME_LOGO,  XKB_STATE_MODS_EFFECTIVE) > 0) mods |= ska_keymod_gui;
-	return mods;
-}
-
 static ska_scancode_ ska_wl_scancode(uint32_t evdev_key) {
 	struct xkb_keymap* keymap = ska_wl()->xkb_keymap;
 	if (!keymap) return ska_scancode_unknown;
@@ -602,7 +590,9 @@ static void ska_wl_emit_key(ska_window_t* window, uint32_t evdev_key, ska_scanco
 	if (scancode != ska_scancode_unknown) {
 		g_ska.input_state.keyboard[scancode] = pressed ? 1 : 0;
 	}
-	uint16_t mods = ska_wl_modifiers();
+	// wl_keyboard.modifiers arrives after the key, so xkb would still report a
+	// just-released modifier as held. Tracked key state is already post-event.
+	uint16_t mods = ska_input_state_derive_modifiers(&g_ska.input_state);
 	event.keyboard.modifiers        = mods;
 	g_ska.input_state.key_modifiers = mods;
 	ska_post_event(&event);
@@ -692,9 +682,20 @@ static void ska_wl_keyboard_keymap(void* data, struct wl_keyboard* keyboard, uin
 }
 
 static void ska_wl_keyboard_enter(void* data, struct wl_keyboard* keyboard, uint32_t serial, struct wl_surface* surface, struct wl_array* keys) {
-	(void)data; (void)keyboard; (void)keys;
+	(void)data; (void)keyboard;
 	ska_wl()->last_input_serial = serial;
 	ska_wl()->keyboard_focus    = ska_wl_window_from_surface(surface);
+	if (!ska_wl()->keyboard_focus) return;
+
+	// Pairs with the release_all in keyboard_leave
+	// Far beyond any keyboard's rollover, so modifiers are never cut off
+	ska_scancode_ held[256];
+	int32_t       count = 0;
+	uint32_t*     key;
+	wl_array_for_each(key, keys) {
+		if (count < 256) held[count++] = ska_wl_scancode(*key);
+	}
+	ska_input_press_held(ska_wl()->keyboard_focus->id, held, count);
 }
 
 static void ska_wl_keyboard_leave(void* data, struct wl_keyboard* keyboard, uint32_t serial, struct wl_surface* surface) {
@@ -738,7 +739,6 @@ static void ska_wl_keyboard_modifiers(void* data, struct wl_keyboard* keyboard, 
 	(void)data; (void)keyboard; (void)serial;
 	if (!ska_wl()->xkb_state) return;
 	xkb_state_update_mask(ska_wl()->xkb_state, mods_depressed, mods_latched, mods_locked, 0, 0, group);
-	g_ska.input_state.key_modifiers = ska_wl_modifiers();
 }
 
 static void ska_wl_keyboard_repeat_info(void* data, struct wl_keyboard* keyboard, int32_t rate, int32_t delay) {

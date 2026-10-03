@@ -872,6 +872,22 @@ static Bool ska_x11_keyrepeat_predicate(Display* display, XEvent* peek, XPointer
 	return False;
 }
 
+// Keys held as focus arrives sent their KeyPress elsewhere. Level 0 keysyms
+// match what XLookupKeysym(&event, 0) gives the key handler.
+static void ska_x11_press_held(ska_window_id_t window_id) {
+	char keymap[32];
+	XQueryKeymap(g_ska.x_display, keymap);
+
+	ska_scancode_ held[256]; // One slot per X keycode
+	int32_t       count = 0;
+	for (int32_t keycode = 8; keycode < 256; keycode++) {
+		if (!(keymap[keycode / 8] & (1 << (keycode % 8)))) continue;
+		KeySym keysym = XkbKeycodeToKeysym(g_ska.x_display, (KeyCode)keycode, 0, 0);
+		held[count++] = ska_linux_keysym_to_scancode((uint32_t)keysym);
+	}
+	ska_input_press_held(window_id, held, count);
+}
+
 void ska_x11_pump_events(void) {
 	// File-dialog subprocesses (zenity/kdialog) run independent of our X
 	// connection, so they're still polled in headless runs.
@@ -1159,6 +1175,7 @@ void ska_x11_pump_events(void) {
 				XSetICFocus(window->xic);
 			}
 			ska_post_event(&event);
+			ska_x11_press_held(window->id);
 			break;
 
 		case FocusOut:

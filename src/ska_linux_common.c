@@ -418,58 +418,17 @@ void ska_linux_check_file_dialog(void) {
 }
 
 // ============================================================================
-// KVP Store (Linux: ~/.config/<app_name>/<key>)
+// KVP Store (Linux: ~/.config/<app_id>/<key>)
 // ============================================================================
 
-#include <sys/stat.h>
 #include <errno.h>
-#include <pwd.h>
 #include <limits.h>
 
 static bool ska_kvpstore_get_path(const char* key, char* buffer, size_t buffer_size) {
-	// Get config directory (XDG_CONFIG_HOME or ~/.config)
-	const char* config_home = getenv("XDG_CONFIG_HOME");
-	char config_dir[PATH_MAX];
-
-	if (config_home && config_home[0] != '\0') {
-		snprintf(config_dir, sizeof(config_dir), "%s", config_home);
-	} else {
-		const char* home = getenv("HOME");
-		if (!home) {
-			struct passwd* pw = getpwuid(getuid());
-			if (pw) home = pw->pw_dir;
-		}
-		if (!home) {
-			ska_set_error("ska_kvpstore: unable to determine home directory");
-			return false;
-		}
-		snprintf(config_dir, sizeof(config_dir), "%s/.config", home);
-	}
-
-	// Create config dir if needed
-	struct stat st;
-	if (stat(config_dir, &st) != 0) {
-		if (mkdir(config_dir, 0755) != 0 && errno != EEXIST) {
-			ska_set_error("ska_kvpstore: failed to create config directory");
-			return false;
-		}
-	}
-
-	// Create app dir. A truncated path would silently point somewhere else, so
-	// it is an error rather than something to carry on with.
 	char app_dir[PATH_MAX];
-	int app_len = snprintf(app_dir, sizeof(app_dir), "%s/%s", config_dir, ska_kvpstore_get_app_name());
-	if (app_len < 0 || (size_t)app_len >= sizeof(app_dir)) {
-		ska_set_error("ska_kvpstore: config path is too long");
-		return false;
-	}
-	if (stat(app_dir, &st) != 0) {
-		if (mkdir(app_dir, 0755) != 0 && errno != EEXIST) {
-			ska_set_error("ska_kvpstore: failed to create app directory");
-			return false;
-		}
-	}
+	if (!ska_path_get(ska_path_config, app_dir, sizeof(app_dir))) return false;
 
+	// A truncated path would silently point somewhere else
 	int len = snprintf(buffer, buffer_size, "%s/%s", app_dir, key);
 	if (len < 0 || (size_t)len >= buffer_size) {
 		ska_set_error("ska_kvpstore: path for key '%s' is too long", key);
@@ -479,7 +438,7 @@ static bool ska_kvpstore_get_path(const char* key, char* buffer, size_t buffer_s
 }
 
 SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 	if (!data && size > 0) {
 		ska_set_error("ska_kvpstore_save: NULL data with non-zero size");
 		return false;
@@ -494,7 +453,7 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 }
 
 SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 
 	char path[PATH_MAX];
 	if (!ska_kvpstore_get_path(key, path, sizeof(path))) {
@@ -530,7 +489,7 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 }
 
 SKA_API bool ska_kvpstore_delete(const char* key) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 
 	char path[PATH_MAX];
 	if (!ska_kvpstore_get_path(key, path, sizeof(path))) {

@@ -278,6 +278,9 @@ uint16_t ska_input_state_derive_modifiers(const ska_input_state_t* state);
 // Queues a key up per held key and a button up per held button, then clears the
 // tracked state.
 void ska_input_release_all(ska_window_id_t window_id);
+// Focus gain counterpart: queues a key down per held modifier so its later key
+// up stays balanced. Other held keys are skipped, they were meant for the last focus.
+void ska_input_press_held(ska_window_id_t window_id, const ska_scancode_* held, int32_t held_count);
 
 // ============================================================================
 // Window Structure
@@ -471,7 +474,7 @@ typedef struct ska_state_t {
 	bool initialized;
 	char error_msg[512];
 	uint64_t start_time;
-	char* app_id; // From ska_settings_t, NULL when unset; window title stands in
+	char* app_id; // From ska_settings_t or the exe name, NULL on Android/web when unset
 
 	ska_window_t* windows[SKA_MAX_WINDOWS];
 	uint32_t window_count;
@@ -551,9 +554,14 @@ ska_window_t* ska_window_alloc(void);
 void ska_window_free(ska_window_t* ref_window);
 void ska_post_event(const ska_event_t* event);
 
-// KVP Store internal functions (for platform implementations)
-const char* ska_kvpstore_get_app_name(void);
-bool        ska_kvpstore_validate_key(const char* key);
+// Names per-app storage. app_id, or "sk_app" when that is NULL.
+const char* ska_app_name(void);
+// Executable file name without folder or extension. Silently false on Android and web.
+bool        ska_exe_name_get(char* out_buffer, size_t buffer_size);
+
+// Every kvpstore call starts here: validates the key, and that ska_init has
+// settled the app_id storage is named by.
+bool        ska_kvpstore_check(const char* key);
 
 // Platform-specific initialization
 bool ska_platform_init(void);
@@ -672,6 +680,8 @@ void ska_free_string(void* str);
 bool ska_android_content_read(const char* uri, void** out_data, size_t* out_size);
 // Write bytes to a content:// URI via ContentResolver, mirroring ska_file_write.
 bool ska_android_content_write(const char* uri, const void* data, size_t size);
+// Resolve the per-app Context folders behind ska_path_get (data, config, cache, temp).
+bool ska_android_path_get(ska_path_ path, char* out_buffer, size_t buffer_size);
 #endif
 
 #endif // SKA_INTERNAL_H

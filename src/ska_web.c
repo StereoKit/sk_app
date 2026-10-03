@@ -984,11 +984,11 @@ bool ska_platform_file_dialog_show(ska_file_dialog_id_t id, const ska_file_dialo
 // store when localStorage is unavailable (e.g. node, sandboxed iframes).
 
 static void ska_web_kvp_full_key(const char* key, char* buffer, size_t buffer_size) {
-	snprintf(buffer, buffer_size, "ska_%s_%s", ska_kvpstore_get_app_name(), key);
+	snprintf(buffer, buffer_size, "ska_%s_%s", ska_app_name(), key);
 }
 
 SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 	if (!data && size > 0) {
 		ska_set_error("ska_kvpstore_save: NULL data with non-zero size");
 		return false;
@@ -1024,7 +1024,7 @@ SKA_API bool ska_kvpstore_save(const char* key, const void* data, size_t size) {
 }
 
 SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_size, size_t* opt_out_size) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 
 	char full_key[160];
 	ska_web_kvp_full_key(key, full_key, sizeof(full_key));
@@ -1078,7 +1078,7 @@ SKA_API bool ska_kvpstore_load(const char* key, void* opt_buffer, size_t buffer_
 }
 
 SKA_API bool ska_kvpstore_delete(const char* key) {
-	if (!ska_kvpstore_validate_key(key)) return false;
+	if (!ska_kvpstore_check(key)) return false;
 
 	char full_key[160];
 	ska_web_kvp_full_key(key, full_key, sizeof(full_key));
