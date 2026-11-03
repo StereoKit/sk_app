@@ -5,8 +5,8 @@ project(sk_app VERSION 1.0.0)
 option(SKA_BUILD_SHARED   "Build shared library"       OFF)
 option(SKA_BUILD_EXAMPLES "Build example applications" ON)
 
-# Release build optimizations
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
+# Release build optimizations, in GCC/Clang syntax that MSVC ignores with D9002.
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT MSVC)
 	add_compile_options(
 		-fno-exceptions
 		-fno-unwind-tables
@@ -15,10 +15,13 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
 		-ffunction-sections
 	)
 
-	add_link_options(
-		-Wl,--gc-sections
-		-Wl,--strip-all
-	)
+	# Apple's linker has neither of these.
+	if(NOT APPLE)
+		add_link_options(
+			-Wl,--gc-sections
+			-Wl,--strip-all
+		)
+	endif()
 endif()
 
 ###############################################################################
