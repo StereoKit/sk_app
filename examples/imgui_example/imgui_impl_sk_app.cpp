@@ -277,9 +277,8 @@ bool ImGui_ImplSkApp_ProcessEvent(const ska_event_t* event)
 
 		case ska_event_mouse_wheel:
 		{
-			float wheel_x = (float)event->mouse_wheel.x;
-			float wheel_y = (float)event->mouse_wheel.y;
-			io.AddMouseWheelEvent(wheel_x, wheel_y);
+			// Precise keeps hi-res wheel and touchpad fractions, which ImGui accepts
+			io.AddMouseWheelEvent(event->mouse_wheel.precise_x, event->mouse_wheel.precise_y);
 			return true;
 		}
 

@@ -98,6 +98,12 @@ typedef struct ska_wl_state_t {
 	double relative_carry_x; // Sub-pixel locked-pointer motion, kept so slow drags register
 	double relative_carry_y;
 
+	// Scroll gathered until wl_pointer.frame, indexed by wl_pointer_axis
+	float axis_distance [2]; // Surface units, the only measure touchpads send
+	float axis_notches  [2]; // From value120 or discrete, set only for wheels
+	bool  axis_has_notch[2];
+	float axis_carry    [2]; // Fractional notches not yet reported as whole clicks
+
 	// The compositor only states a rate and delay, so sk_app times the repeats
 	int32_t       repeat_rate;      // Repeats per second, 0 disables
 	int32_t       repeat_delay;     // Milliseconds before the first repeat
@@ -857,36 +863,76 @@ static void ska_wl_pointer_button(void* data, struct wl_pointer* pointer, uint32
 	ska_post_event(&event);
 }
 
-static void ska_wl_pointer_axis(void* data, struct wl_pointer* pointer, uint32_t time, uint32_t axis, wl_fixed_t value) {
-	(void)data; (void)pointer; (void)time;
-	ska_window_t* window = ska_wl()->pointer_focus;
-	if (!window) return;
+// Splits accumulated notches into whole clicks, leaving the fraction behind.
+static int32_t ska_wl_take_clicks(float* ref_carry, float notches) {
+	*ref_carry    += notches;
+	int32_t clicks = (int32_t)*ref_carry;
+	*ref_carry    -= (float)clicks;
+	return clicks;
+}
 
-	// Wayland measures scroll in surface units growing downward, the opposite
-	// of the wheel-click convention sk_app reports.
-	float scroll = -(float)wl_fixed_to_double(value) / 10.0f;
+// Reports the scroll gathered since the last frame as a single wheel event.
+static void ska_wl_flush_scroll(void) {
+	ska_wl_state_t* wl     = ska_wl();
+	ska_window_t*   window = wl->pointer_focus;
 
-	ska_event_t event = {0};
-	event.timestamp             = ska_time_get_elapsed_ms();
-	event.type                  = ska_event_mouse_wheel;
-	event.mouse_wheel.window_id = window->id;
-	if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
-		event.mouse_wheel.precise_y = scroll;
-		event.mouse_wheel.y         = (int32_t)(scroll > 0 ? (scroll + 0.5f) : (scroll - 0.5f));
-	} else {
-		event.mouse_wheel.precise_x = scroll;
-		event.mouse_wheel.x         = (int32_t)(scroll > 0 ? (scroll + 0.5f) : (scroll - 0.5f));
+	// Wheels state notches directly, and their distance is compositor-scaled
+	// and can be far off. Touchpads only send distance, ~10 units per notch.
+	// Wayland scroll grows downward, the opposite of sk_app's wheel convention.
+	float notches[2];
+	for (int32_t a = 0; a < 2; a++) {
+		notches[a] = wl->axis_has_notch[a]
+			? -wl->axis_notches [a]
+			: -wl->axis_distance[a] / 10.0f;
+		wl->axis_distance [a] = 0.0f;
+		wl->axis_notches  [a] = 0.0f;
+		wl->axis_has_notch[a] = false;
 	}
-	ska_post_event(&event);
+	if (!window || (notches[0] == 0.0f && notches[1] == 0.0f)) return;
+
+	ska_post_event(&(ska_event_t){
+		.timestamp   = ska_time_get_elapsed_ms(),
+		.type        = ska_event_mouse_wheel,
+		.mouse_wheel = {
+			.window_id = window->id,
+			.x         = ska_wl_take_clicks(&wl->axis_carry[WL_POINTER_AXIS_HORIZONTAL_SCROLL], notches[WL_POINTER_AXIS_HORIZONTAL_SCROLL]),
+			.y         = ska_wl_take_clicks(&wl->axis_carry[WL_POINTER_AXIS_VERTICAL_SCROLL  ], notches[WL_POINTER_AXIS_VERTICAL_SCROLL  ]),
+			.precise_x = notches[WL_POINTER_AXIS_HORIZONTAL_SCROLL],
+			.precise_y = notches[WL_POINTER_AXIS_VERTICAL_SCROLL  ],
+		},
+	});
+}
+
+static void ska_wl_pointer_axis(void* data, struct wl_pointer* pointer, uint32_t time, uint32_t axis, wl_fixed_t value) {
+	(void)data; (void)time;
+	if (axis > WL_POINTER_AXIS_HORIZONTAL_SCROLL) return;
+	ska_wl()->axis_distance[axis] += (float)wl_fixed_to_double(value);
+
+	// Before seat version 5 there are no frame events to wait for
+	if (wl_pointer_get_version(pointer) < WL_POINTER_FRAME_SINCE_VERSION) ska_wl_flush_scroll();
+}
+
+static void ska_wl_pointer_axis_value120(void* data, struct wl_pointer* pointer, uint32_t axis, int32_t value120) {
+	(void)data; (void)pointer;
+	if (axis > WL_POINTER_AXIS_HORIZONTAL_SCROLL) return;
+	ska_wl()->axis_notches  [axis] += (float)value120 / 120.0f;
+	ska_wl()->axis_has_notch[axis]  = true;
+}
+
+// Seat versions 5 to 7 send this instead of value120
+static void ska_wl_pointer_axis_discrete(void* data, struct wl_pointer* pointer, uint32_t axis, int32_t discrete) {
+	ska_wl_pointer_axis_value120(data, pointer, axis, discrete * 120);
+}
+
+static void ska_wl_pointer_frame(void* data, struct wl_pointer* pointer) {
+	(void)data; (void)pointer;
+	ska_wl_flush_scroll();
 }
 
 // Everything below exists only because a listener with a NULL member crashes
 // when the compositor sends that event.
-static void ska_wl_pointer_frame                  (void* d, struct wl_pointer* p) { (void)d; (void)p; }
 static void ska_wl_pointer_axis_source            (void* d, struct wl_pointer* p, uint32_t s) { (void)d; (void)p; (void)s; }
 static void ska_wl_pointer_axis_stop              (void* d, struct wl_pointer* p, uint32_t t, uint32_t a) { (void)d; (void)p; (void)t; (void)a; }
-static void ska_wl_pointer_axis_discrete          (void* d, struct wl_pointer* p, uint32_t a, int32_t v) { (void)d; (void)p; (void)a; (void)v; }
-static void ska_wl_pointer_axis_value120          (void* d, struct wl_pointer* p, uint32_t a, int32_t v) { (void)d; (void)p; (void)a; (void)v; }
 static void ska_wl_pointer_axis_relative_direction(void* d, struct wl_pointer* p, uint32_t a, uint32_t dir) { (void)d; (void)p; (void)a; (void)dir; }
 
 static const struct wl_pointer_listener k_pointer_listener = {
@@ -973,9 +1019,9 @@ static void ska_wl_registry_global(void* data, struct wl_registry* registry, uin
 	} else if (strcmp(interface, wl_seat_interface.name) == 0) {
 		// Single-seat: a second seat would strand the first's listeners
 		if (wl->seat) return;
-		// Version 5 covers the pointer axis events sk_app reads; binding higher
-		// would mean handling events with no listener entry.
-		uint32_t bind_version = version < 5 ? version : 5;
+		// Version 8 brings axis_value120, so hi-res wheels report true notches.
+		// The pointer listener covers every event up to version 9.
+		uint32_t bind_version = version < 8 ? version : 8;
 		wl->seat = wl_registry_bind(registry, name, &wl_seat_interface, bind_version);
 		wl_seat_add_listener(wl->seat, &k_seat_listener, NULL);
 	} else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
